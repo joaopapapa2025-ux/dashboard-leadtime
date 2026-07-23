@@ -268,53 +268,73 @@ min_date = base["Data pedido"].min().date()
 max_date = base["Data pedido"].max().date()
 
 
-def groups_for_regional(regional: str) -> list[str]:
-    """Retorna apenas os grupos que existem na regional selecionada."""
-    scope = base if regional == "Todos" else base[base["Regional"].eq(regional)]
-    return sorted(scope["Grupo"].dropna().unique().tolist())
+ALL = "Todos"
 
 
-def sync_group_with_regional() -> None:
-    """Reseta ou preenche Grupo quando a Regional muda."""
-    options = groups_for_regional(st.session_state.get("regional_filter", "Todos"))
-    st.session_state["grupo_filter"] = options[0] if len(options) == 1 else "Todos"
-    st.session_state["estado_filter"] = "Todos"
+def selected_values(selection: list[str]) -> list[str]:
+    return [] if not selection or ALL in selection else selection
+
+
+def filter_by_selection(data: pd.DataFrame, column: str, selection: list[str]) -> pd.DataFrame:
+    values = selected_values(selection)
+    return data if not values else data[data[column].isin(values)]
+
+
+def prepare_multiselect(key: str, options: list[str], auto_single: bool = False) -> list[str]:
+    """Mantém 'Todos' como padrão e elimina combinações incompatíveis."""
+    current = st.session_state.get(key, [ALL])
+    if isinstance(current, str):
+        current = [current]
+    current = [value for value in current if value == ALL or value in options]
+    if ALL in current and len(current) > 1:
+        current.remove(ALL)
+    if not current:
+        current = [ALL]
+    if auto_single and len(options) == 1 and current == [ALL]:
+        current = options.copy()
+    st.session_state[key] = current
+    return current
 
 
 def clear_filters() -> None:
     for key in [
-        "period_filter", "regional_filter", "grupo_filter", "status_filter", "estado_filter",
-        "client_search", "pedido_search", "nota_search",
+        "period_filter", "regional_filter", "grupo_filter", "vendedor_filter", "status_filter",
+        "estado_filter", "client_search", "pedido_search", "nota_search",
     ]:
         st.session_state.pop(key, None)
 
 
-filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+regional_options = sorted(base["Regional"].dropna().unique().tolist())
+regional_current = prepare_multiselect("regional_filter", regional_options)
+regional_scope = filter_by_selection(base, "Regional", regional_current)
+group_options = sorted(regional_scope["Grupo"].dropna().unique().tolist())
+group_current = prepare_multiselect("grupo_filter", group_options, auto_single=True)
+vendor_scope = filter_by_selection(regional_scope, "Grupo", group_current)
+vendor_options = sorted(vendor_scope["Vendedor"].dropna().unique().tolist())
+vendor_current = prepare_multiselect("vendedor_filter", vendor_options)
+status_options = sorted(base["Status logística"].dropna().unique().tolist())
+status_current = prepare_multiselect("status_filter", status_options)
+
+filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns(5)
 with filter_col1:
     period = st.date_input(
         "Período do pedido", value=(min_date, max_date), min_value=min_date,
         max_value=max_date, key="period_filter"
     )
 with filter_col2:
-    regional_filter = st.selectbox(
-        "Regional",
-        ["Todos", *sorted(base["Regional"].unique())],
-        key="regional_filter",
-        on_change=sync_group_with_regional,
+    regional_filter = st.multiselect(
+        "Regional", [ALL, *regional_options], default=regional_current, key="regional_filter"
     )
 with filter_col3:
-    group_options = groups_for_regional(regional_filter)
-    if len(group_options) == 1 and st.session_state.get("grupo_filter") != group_options[0]:
-        st.session_state["grupo_filter"] = group_options[0]
-    elif st.session_state.get("grupo_filter", "Todos") not in ["Todos", *group_options]:
-        st.session_state["grupo_filter"] = "Todos"
-    grupo_filter = st.selectbox("Grupo", ["Todos", *group_options], key="grupo_filter")
+    grupo_filter = st.multiselect("Grupo", [ALL, *group_options], default=group_current, key="grupo_filter")
 with filter_col4:
-    status_filter = st.selectbox(
-        "Status", ["Todos", *sorted(base["Status logística"].unique())], key="status_filter"
+    vendedor_filter = st.multiselect(
+        "Vendedor", [ALL, *vendor_options], default=vendor_current, key="vendedor_filter"
     )
+with filter_col5:
+    status_filter = st.multiselect("Status", [ALL, *status_options], default=status_current, key="status_filter")
 
-search_col1, search_col2, search_col3, search_col4 = st.columns(4)
+search_col1, search_col2, search_col3, search_col4, search_col5 = st.columns(5)
 with search_col1:
     client_search = st.text_input(
         "Código do cliente", placeholder="Ex.: C62203", key="client_search",
@@ -325,32 +345,34 @@ with search_col2:
 with search_col3:
     nota_search = st.text_input("Número da nota fiscal", placeholder="Ex.: 0144898", key="nota_search")
 with search_col4:
-    is_special = "ESPECIAIS" in regional_filter.upper()
-    state_scope = base[base["Regional"].eq(regional_filter)] if is_special else base.iloc[0:0]
+    is_special = any("ESPECIAIS" in regional.upper() for regional in selected_values(regional_filter))
+    state_scope = base[base["Regional"].str.contains("ESPECIAIS", case=False, na=False)] if is_special else base.iloc[0:0]
     state_options = sorted(
         state_scope.loc[state_scope["Estado"].notna() & state_scope["Estado"].ne(""), "Estado"].unique()
     )
     if is_special and state_options:
-        estado_filter = st.selectbox("Estado", ["Todos", *state_options], key="estado_filter")
+        state_current = prepare_multiselect("estado_filter", state_options)
+        estado_filter = st.multiselect("Estado", [ALL, *state_options], default=state_current, key="estado_filter")
     elif is_special:
-        estado_filter = "Todos"
+        estado_filter = [ALL]
         st.warning("Envie a base 'Base Dashboard Inside Sales.xlsx' para habilitar Estado.")
     else:
-        estado_filter = "Todos"
+        estado_filter = [ALL]
 
-if st.button("Limpar filtros"):
-    clear_filters()
-    st.rerun()
+with search_col5:
+    st.write("")
+    if st.button("Limpar filtros"):
+        clear_filters()
+        st.rerun()
 
 filtered = base.copy()
-if regional_filter != "Todos":
-    filtered = filtered[filtered["Regional"].eq(regional_filter)]
-if grupo_filter != "Todos":
-    filtered = filtered[filtered["Grupo"].eq(grupo_filter)]
-if status_filter != "Todos":
-    filtered = filtered[filtered["Status logística"].eq(status_filter)]
-if estado_filter != "Todos":
-    filtered = filtered[filtered["Estado"].eq(estado_filter)]
+filtered = filter_by_selection(filtered, "Regional", regional_filter)
+filtered = filter_by_selection(filtered, "Grupo", grupo_filter)
+filtered = filter_by_selection(filtered, "Vendedor", vendedor_filter)
+filtered = filter_by_selection(filtered, "Status logística", status_filter)
+if selected_values(estado_filter):
+    special_rows = filtered["Regional"].str.contains("ESPECIAIS", case=False, na=False)
+    filtered = filtered[~special_rows | filtered["Estado"].isin(selected_values(estado_filter))]
 
 if client_search:
     search = "".join(character for character in client_search.upper() if character.isalnum())
@@ -449,7 +471,7 @@ st.dataframe(
 
 st.subheader("Detalhamento por pedido")
 display_cols = [
-    "Pedido", "Nota fiscal", "Cliente", "Código cliente", "Regional", "Grupo", "Estado", "Status logística", "NFs",
+    "Pedido", "Nota fiscal", "Cliente", "Código cliente", "Vendedor", "Regional", "Grupo", "Estado", "Status logística", "NFs",
     "Valor pedido", "Valor nota fiscal",
     "Data pedido", "Data faturamento", "Data prevista", "Data entrega",
     "Pedido → faturamento (dias)", "Faturamento → previsão (dias)",
