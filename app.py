@@ -229,17 +229,43 @@ except Exception as error:
 st.subheader("Filtros")
 min_date = base["Data pedido"].min().date()
 max_date = base["Data pedido"].max().date()
+
+
+def groups_for_regional(regional: str) -> list[str]:
+    """Retorna apenas os grupos que existem na regional selecionada."""
+    scope = base if regional == "Todos" else base[base["Regional"].eq(regional)]
+    return sorted(scope["Grupo"].dropna().unique().tolist())
+
+
+def sync_group_with_regional() -> None:
+    """Reseta ou preenche Grupo quando a Regional muda."""
+    options = groups_for_regional(st.session_state.get("regional_filter", "Todos"))
+    st.session_state["grupo_filter"] = options[0] if len(options) == 1 else "Todos"
+
+
 filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
 with filter_col1:
     period = st.date_input(
         "Período do pedido", value=(min_date, max_date), min_value=min_date, max_value=max_date
     )
 with filter_col2:
-    regional_filter = st.selectbox("Regional", ["Todos", *sorted(base["Regional"].unique())])
+    regional_filter = st.selectbox(
+        "Regional",
+        ["Todos", *sorted(base["Regional"].unique())],
+        key="regional_filter",
+        on_change=sync_group_with_regional,
+    )
 with filter_col3:
-    grupo_filter = st.selectbox("Grupo", ["Todos", *sorted(base["Grupo"].unique())])
+    group_options = groups_for_regional(regional_filter)
+    if len(group_options) == 1 and st.session_state.get("grupo_filter") != group_options[0]:
+        st.session_state["grupo_filter"] = group_options[0]
+    elif st.session_state.get("grupo_filter", "Todos") not in ["Todos", *group_options]:
+        st.session_state["grupo_filter"] = "Todos"
+    grupo_filter = st.selectbox("Grupo", ["Todos", *group_options], key="grupo_filter")
 with filter_col4:
-    status_filter = st.selectbox("Status", ["Todos", *sorted(base["Status logística"].unique())])
+    status_filter = st.selectbox(
+        "Status", ["Todos", *sorted(base["Status logística"].unique())], key="status_filter"
+    )
 
 client_search = st.text_input(
     "Código do cliente",
