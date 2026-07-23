@@ -83,8 +83,12 @@ def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
             "Valor pedido": clean_text(pedidos_raw.iloc[:, 13]),
         }
     )
-    # Somente finais 00 são pedidos. Finais 50 são orçamentos.
-    pedidos = pedidos[pedidos["Pedido"].str.endswith("00", na=False)].copy()
+    # Somente finais 00 são pedidos. Finais 50 são orçamentos; CAN e REP
+    # representam pedidos cancelados e reprovados, que não entram na operação.
+    pedidos = pedidos[
+        pedidos["Pedido"].str.endswith("00", na=False)
+        & ~pedidos["Status pedido"].isin(["CAN", "REP"])
+    ].copy()
 
     faturamento_all = pd.DataFrame(
         {
@@ -246,7 +250,7 @@ def sync_group_with_regional() -> None:
 filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
 with filter_col1:
     period = st.date_input(
-        "Período", value=(min_date, max_date), min_value=min_date, max_value=max_date
+        "Período do pedido", value=(min_date, max_date), min_value=min_date, max_value=max_date
     )
 with filter_col2:
     regional_filter = st.selectbox(
