@@ -360,7 +360,8 @@ with search_col4:
         estado_filter = [ALL]
 
 with search_col5:
-    st.write("")
+    # Espaço do rótulo para alinhar o botão verticalmente aos campos ao lado.
+    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
     if st.button("Limpar filtros"):
         clear_filters()
         st.rerun()
