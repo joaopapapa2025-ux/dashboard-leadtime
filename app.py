@@ -1,6 +1,8 @@
 from pathlib import Path
 from datetime import date
+from io import BytesIO
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -20,6 +22,32 @@ def parse_date(series: pd.Series) -> pd.Series:
     """Lê as datas no padrão ddmmyyyy e ignora 00000000."""
     value = clean_text(series).replace({"00000000": "", "nan": ""})
     return pd.to_datetime(value, format="%d%m%Y", errors="coerce")
+
+
+def business_days_between(start: pd.Series, end: pd.Series) -> pd.Series:
+    """Calcula dias úteis de segunda a sexta, sem considerar feriados."""
+    result = pd.Series(pd.NA, index=start.index, dtype="Int64")
+    valid = start.notna() & end.notna()
+    if valid.any():
+        result.loc[valid] = np.busday_count(
+            start.loc[valid].values.astype("datetime64[D]"),
+            end.loc[valid].values.astype("datetime64[D]"),
+        )
+    return result
+
+
+def to_excel(data: pd.DataFrame) -> bytes:
+    """Gera o arquivo Excel a partir da visão filtrada."""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl", datetime_format="DD/MM/YYYY") as writer:
+        data.to_excel(writer, index=False, sheet_name="Pedidos filtrados")
+        worksheet = writer.sheets["Pedidos filtrados"]
+        worksheet.freeze_panes = "A2"
+        worksheet.auto_filter.ref = worksheet.dimensions
+        for cells in worksheet.columns:
+            width = min(max(len(str(cell.value or "")) for cell in cells) + 2, 35)
+            worksheet.column_dimensions[cells[0].column_letter].width = width
+    return output.getvalue()
 
 
 def find_source_file(prefix: str) -> Path | None:
@@ -58,7 +86,7 @@ def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
     # Somente finais 00 são pedidos. Finais 50 são orçamentos.
     pedidos = pedidos[pedidos["Pedido"].str.endswith("00", na=False)].copy()
 
-    faturamento = pd.DataFrame(
+    faturamento_all = pd.DataFrame(
         {
             "Data faturamento": parse_date(faturamento_raw.iloc[:, 0]),
             "Nota fiscal": clean_text(faturamento_raw.iloc[:, 1]),
@@ -71,7 +99,21 @@ def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
             "Grupo": clean_text(faturamento_raw.iloc[:, 33]),  # AH: Desc.Grupo Cliente
         }
     )
-    faturamento = faturamento[faturamento["Pedido"].ne("")].copy()
+    client_dimension = (
+        faturamento_all[faturamento_all["Código cliente NF"].ne("")]
+        .sort_values("Data faturamento")
+        .groupby("Código cliente NF", as_index=False)
+        .last()
+        .rename(
+            columns={
+                "Código cliente NF": "Código cliente",
+                "Cliente NF": "Cliente cadastro",
+                "Regional": "Regional cadastro",
+                "Grupo": "Grupo cadastro",
+            }
+        )[["Código cliente", "Cliente cadastro", "Regional cadastro", "Grupo cadastro"]]
+    )
+    faturamento = faturamento_all[faturamento_all["Pedido"].ne("")].copy()
 
     # Um pedido pode ter mais de uma NF. O dashboard consolida em uma linha por pedido:
     # primeiro faturamento e última previsão/entrega, evitando duplicar pedidos nos indicadores.
@@ -92,14 +134,25 @@ def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
     )
 
     df = pedidos.merge(faturamento_resumo, how="left", on="Pedido")
-    # O cliente da SVE660 (coluna F) é a referência preferida para os filtros.
-    # Pedidos ainda não faturados mantêm o cliente informado na SVE611.
-    df["Cliente"] = df["Cliente NF"].where(df["Cliente NF"].ne(""), df["Cliente"])
-    df["Código cliente"] = df["Código cliente NF"].where(
-        df["Código cliente NF"].ne(""), df["Código cliente"]
+    df = df.merge(client_dimension, how="left", on="Código cliente")
+
+    # Para pedidos não faturados, regional e grupo vêm do último cadastro do
+    # cliente visto na SVE660. Os dados do pedido nunca são apagados por NaN.
+    has_nf_client = df["Cliente NF"].notna() & df["Cliente NF"].ne("")
+    has_client_history = df["Cliente cadastro"].notna() & df["Cliente cadastro"].ne("")
+    df["Cliente"] = df["Cliente NF"].where(
+        has_nf_client, df["Cliente cadastro"].where(has_client_history, df["Cliente"])
     )
-    df["Regional"] = df["Regional"].replace("", pd.NA).fillna("Sem regional")
-    df["Grupo"] = df["Grupo"].replace("", pd.NA).fillna("Sem grupo")
+    has_nf_code = df["Código cliente NF"].notna() & df["Código cliente NF"].ne("")
+    df["Código cliente"] = df["Código cliente NF"].where(has_nf_code, df["Código cliente"])
+    df["Regional"] = (
+        df["Regional"].replace("", pd.NA).fillna(df["Regional cadastro"])
+        .replace("", pd.NA).fillna("Sem regional")
+    )
+    df["Grupo"] = (
+        df["Grupo"].replace("", pd.NA).fillna(df["Grupo cadastro"])
+        .replace("", pd.NA).fillna("Sem grupo")
+    )
     df["NFs"] = df["NFs"].fillna(0).astype(int)
 
     df["Pedido → faturamento (dias)"] = (
@@ -114,6 +167,18 @@ def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
     df["Lead time total (dias)"] = (
         df["Data entrega"] - df["Data pedido"]
     ).dt.days
+    df["Pedido → faturamento (dias úteis)"] = business_days_between(
+        df["Data pedido"], df["Data faturamento"]
+    )
+    df["Faturamento → previsão (dias úteis)"] = business_days_between(
+        df["Data faturamento"], df["Data prevista"]
+    )
+    df["Faturamento → entrega (dias úteis)"] = business_days_between(
+        df["Data faturamento"], df["Data entrega"]
+    )
+    df["Lead time total (dias úteis)"] = business_days_between(
+        df["Data pedido"], df["Data entrega"]
+    )
 
     today = pd.Timestamp(date.today())
     df["Status logística"] = "Aguardando faturamento"
@@ -142,7 +207,6 @@ def format_days(value: float) -> str:
 
 
 st.title("⏱️ Lead Time da Operação")
-st.caption("Pedidos finais 00 • Atualização diária pelas bases SVE611 e SVE660")
 
 pedidos_file = find_source_file("SVE611")
 faturamento_file = find_source_file("SVE660")
@@ -162,32 +226,39 @@ except Exception as error:
     st.exception(error)
     st.stop()
 
-with st.sidebar:
-    st.header("Filtros")
-    regionais = sorted(base["Regional"].dropna().unique())
-    grupos = sorted(base["Grupo"].dropna().unique())
-    regional_filter = st.multiselect("Regional", regionais, default=regionais)
-    grupo_filter = st.multiselect("Grupo", grupos, default=grupos)
-    client_search = st.text_input("Buscar cliente ou código", placeholder="Ex.: Drogaria ou C12345")
-    statuses = sorted(base["Status logística"].unique())
-    status_filter = st.multiselect("Status", statuses, default=statuses)
+st.subheader("Filtros")
+min_date = base["Data pedido"].min().date()
+max_date = base["Data pedido"].max().date()
+filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+with filter_col1:
+    period = st.date_input(
+        "Período do pedido", value=(min_date, max_date), min_value=min_date, max_value=max_date
+    )
+with filter_col2:
+    regional_filter = st.selectbox("Regional", ["Todos", *sorted(base["Regional"].unique())])
+with filter_col3:
+    grupo_filter = st.selectbox("Grupo", ["Todos", *sorted(base["Grupo"].unique())])
+with filter_col4:
+    status_filter = st.selectbox("Status", ["Todos", *sorted(base["Status logística"].unique())])
 
-    min_date = base["Data pedido"].min().date()
-    max_date = base["Data pedido"].max().date()
-    period = st.date_input("Período do pedido", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+client_search = st.text_input(
+    "Código do cliente",
+    placeholder="Ex.: C62203",
+    help="A busca é exata, considerando somente o código do cliente.",
+)
 
-filtered = base[
-    base["Regional"].isin(regional_filter)
-    & base["Grupo"].isin(grupo_filter)
-    & base["Status logística"].isin(status_filter)
-].copy()
+filtered = base.copy()
+if regional_filter != "Todos":
+    filtered = filtered[filtered["Regional"].eq(regional_filter)]
+if grupo_filter != "Todos":
+    filtered = filtered[filtered["Grupo"].eq(grupo_filter)]
+if status_filter != "Todos":
+    filtered = filtered[filtered["Status logística"].eq(status_filter)]
 
 if client_search:
-    search = client_search.strip().casefold()
-    filtered = filtered[
-        filtered["Cliente"].str.casefold().str.contains(search, na=False)
-        | filtered["Código cliente"].str.casefold().str.contains(search, na=False)
-    ]
+    search = "".join(character for character in client_search.upper() if character.isalnum())
+    code = filtered["Código cliente"].fillna("").str.upper().str.replace(r"[^A-Z0-9]", "", regex=True)
+    filtered = filtered[code.eq(search)]
 
 if isinstance(period, tuple) and len(period) == 2:
     start_date, end_date = map(pd.Timestamp, period)
@@ -245,21 +316,34 @@ with right:
     st.plotly_chart(fig_regional, use_container_width=True)
 
 st.subheader("Prazos médios")
-lead_cols = [
-    "Pedido → faturamento (dias)",
-    "Faturamento → previsão (dias)",
-    "Faturamento → entrega (dias)",
-    "Lead time total (dias)",
+lead_stages = [
+    ("Pedido → faturamento", "Pedido → faturamento (dias)", "Pedido → faturamento (dias úteis)"),
+    ("Faturamento → previsão", "Faturamento → previsão (dias)", "Faturamento → previsão (dias úteis)"),
+    ("Faturamento → entrega", "Faturamento → entrega (dias)", "Faturamento → entrega (dias úteis)"),
+    ("Lead time total", "Lead time total (dias)", "Lead time total (dias úteis)"),
 ]
 lead_summary = pd.DataFrame(
     {
-        "Etapa": lead_cols,
-        "Média (dias)": [filtered[column].mean() for column in lead_cols],
-        "Mediana (dias)": [filtered[column].median() for column in lead_cols],
-        "Pedidos com dado": [int(filtered[column].notna().sum()) for column in lead_cols],
+        "Etapa": [stage[0] for stage in lead_stages],
+        "Média dias corridos": [filtered[stage[1]].mean() for stage in lead_stages],
+        "Mediana dias corridos": [filtered[stage[1]].median() for stage in lead_stages],
+        "Média dias úteis": [filtered[stage[2]].mean() for stage in lead_stages],
+        "Mediana dias úteis": [filtered[stage[2]].median() for stage in lead_stages],
+        "Pedidos com dado": [int(filtered[stage[1]].notna().sum()) for stage in lead_stages],
     }
 )
-st.dataframe(lead_summary, hide_index=True, use_container_width=True, column_config={"Média (dias)": st.column_config.NumberColumn(format="%.1f"), "Mediana (dias)": st.column_config.NumberColumn(format="%.1f")})
+st.caption("Dias úteis: segunda a sexta-feira, sem descontar feriados.")
+st.dataframe(
+    lead_summary,
+    hide_index=True,
+    use_container_width=True,
+    column_config={
+        "Média dias corridos": st.column_config.NumberColumn(format="%.1f"),
+        "Mediana dias corridos": st.column_config.NumberColumn(format="%.1f"),
+        "Média dias úteis": st.column_config.NumberColumn(format="%.1f"),
+        "Mediana dias úteis": st.column_config.NumberColumn(format="%.1f"),
+    },
+)
 
 st.subheader("Detalhamento por pedido")
 display_cols = [
@@ -267,6 +351,8 @@ display_cols = [
     "Data pedido", "Data faturamento", "Data prevista", "Data entrega",
     "Pedido → faturamento (dias)", "Faturamento → previsão (dias)",
     "Faturamento → entrega (dias)", "Lead time total (dias)",
+    "Pedido → faturamento (dias úteis)", "Faturamento → previsão (dias úteis)",
+    "Faturamento → entrega (dias úteis)", "Lead time total (dias úteis)",
 ]
 detail = filtered[display_cols].sort_values(["Data pedido", "Pedido"], ascending=[False, False])
 st.dataframe(
@@ -282,8 +368,16 @@ st.dataframe(
         "Faturamento → previsão (dias)": st.column_config.NumberColumn(format="%.0f"),
         "Faturamento → entrega (dias)": st.column_config.NumberColumn(format="%.0f"),
         "Lead time total (dias)": st.column_config.NumberColumn(format="%.0f"),
+        "Pedido → faturamento (dias úteis)": st.column_config.NumberColumn(format="%.0f"),
+        "Faturamento → previsão (dias úteis)": st.column_config.NumberColumn(format="%.0f"),
+        "Faturamento → entrega (dias úteis)": st.column_config.NumberColumn(format="%.0f"),
+        "Lead time total (dias úteis)": st.column_config.NumberColumn(format="%.0f"),
     },
 )
 
-csv = detail.to_csv(index=False).encode("utf-8-sig")
-st.download_button("Baixar dados filtrados (CSV)", data=csv, file_name="leadtime_filtrado.csv", mime="text/csv")
+st.download_button(
+    "Baixar dados filtrados (Excel)",
+    data=to_excel(detail),
+    file_name="leadtime_filtrado.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
