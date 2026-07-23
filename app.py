@@ -250,7 +250,7 @@ def sync_group_with_regional() -> None:
 filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
 with filter_col1:
     period = st.date_input(
-        "Período do pedido", value=(min_date, max_date), min_value=min_date, max_value=max_date
+        "Período", value=(min_date, max_date), min_value=min_date, max_value=max_date
     )
 with filter_col2:
     regional_filter = st.selectbox(
