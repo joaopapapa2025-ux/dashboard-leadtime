@@ -24,6 +24,12 @@ def parse_date(series: pd.Series) -> pd.Series:
     return pd.to_datetime(value, format="%d%m%Y", errors="coerce")
 
 
+def parse_brl_number(series: pd.Series) -> pd.Series:
+    """Converte valores como 11.584,44 para números utilizáveis no dashboard."""
+    value = clean_text(series).str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+    return pd.to_numeric(value, errors="coerce")
+
+
 def business_days_between(start: pd.Series, end: pd.Series) -> pd.Series:
     """Calcula dias úteis de segunda a sexta, sem considerar feriados."""
     result = pd.Series(pd.NA, index=start.index, dtype="Int64")
@@ -50,7 +56,7 @@ def to_excel(data: pd.DataFrame) -> bytes:
     return output.getvalue()
 
 
-def find_source_file(prefix: str) -> Path | None:
+def find_source_file(prefix: str, required: bool = True) -> Path | None:
     """Localiza a única planilha cujo nome começa com o prefixo informado."""
     files = sorted(
         path
@@ -63,11 +69,13 @@ def find_source_file(prefix: str) -> Path | None:
         st.error(f"Há mais de um arquivo começando com `{prefix}` na raiz do projeto.")
         st.info("Mantenha apenas a versão mais recente de cada base antes de fazer o commit.")
         st.stop()
+    if required:
+        return None
     return None
 
 
 @st.cache_data(show_spinner="Lendo e conciliando as bases...")
-def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
+def load_data(pedidos_path: str, faturamento_path: str, inside_sales_path: str | None) -> pd.DataFrame:
     pedidos_raw = pd.read_excel(pedidos_path, dtype=str)
     faturamento_raw = pd.read_excel(faturamento_path, dtype=str)
 
@@ -80,7 +88,7 @@ def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
             "Cliente": clean_text(pedidos_raw.iloc[:, 6]),
             "Data pedido": parse_date(pedidos_raw.iloc[:, 9]),
             "Vendedor": clean_text(pedidos_raw.iloc[:, 8]),
-            "Valor pedido": clean_text(pedidos_raw.iloc[:, 13]),
+            "Valor pedido": parse_brl_number(pedidos_raw.iloc[:, 13]),
         }
     )
     # Somente finais 00 são pedidos. Finais 50 são orçamentos; CAN e REP
@@ -98,6 +106,7 @@ def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
             "Cliente NF": clean_text(faturamento_raw.iloc[:, 5]),
             "Data prevista": parse_date(faturamento_raw.iloc[:, 11]),
             "Data entrega": parse_date(faturamento_raw.iloc[:, 12]),
+            "Valor nota fiscal": parse_brl_number(faturamento_raw.iloc[:, 21]),
             "Pedido": clean_text(faturamento_raw.iloc[:, 23]),
             "Regional": clean_text(faturamento_raw.iloc[:, 31]),  # AF: Desc.Região
             "Grupo": clean_text(faturamento_raw.iloc[:, 33]),  # AH: Desc.Grupo Cliente
@@ -126,9 +135,11 @@ def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
         .agg(
             **{
                 "NFs": ("Nota fiscal", "nunique"),
+                "Nota fiscal": ("Nota fiscal", lambda values: ", ".join(sorted(set(values.dropna())))),
                 "Data faturamento": ("Data faturamento", "min"),
                 "Data prevista": ("Data prevista", "max"),
                 "Data entrega": ("Data entrega", "max"),
+                "Valor nota fiscal": ("Valor nota fiscal", "sum"),
                 "Código cliente NF": ("Código cliente NF", "first"),
                 "Cliente NF": ("Cliente NF", "first"),
                 "Regional": ("Regional", "first"),
@@ -139,6 +150,20 @@ def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
 
     df = pedidos.merge(faturamento_resumo, how="left", on="Pedido")
     df = df.merge(client_dimension, how="left", on="Código cliente")
+
+    if inside_sales_path:
+        inside_sales = pd.read_excel(inside_sales_path, dtype=str)
+        state_dimension = pd.DataFrame(
+            {
+                "Código cliente": clean_text(inside_sales["CÓDIGO"]),
+                "Estado": clean_text(inside_sales["UF"]),
+            }
+        )
+        state_dimension = state_dimension[state_dimension["Código cliente"].ne("")]
+        state_dimension = state_dimension.drop_duplicates("Código cliente")
+        df = df.merge(state_dimension, how="left", on="Código cliente")
+    else:
+        df["Estado"] = pd.NA
 
     # Para pedidos não faturados, regional e grupo vêm do último cadastro do
     # cliente visto na SVE660. Os dados do pedido nunca são apagados por NaN.
@@ -157,7 +182,10 @@ def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
         df["Grupo"].replace("", pd.NA).fillna(df["Grupo cadastro"])
         .replace("", pd.NA).fillna("Sem grupo")
     )
+    df["Estado"] = df["Estado"].replace("", pd.NA).fillna("Não informado")
     df["NFs"] = df["NFs"].fillna(0).astype(int)
+    df["Nota fiscal"] = df["Nota fiscal"].fillna("")
+    df["Valor nota fiscal"] = df["Valor nota fiscal"].fillna(0.0)
 
     df["Pedido → faturamento (dias)"] = (
         df["Data faturamento"] - df["Data pedido"]
@@ -214,6 +242,7 @@ st.title("⏱️ Lead Time da Operação")
 
 pedidos_file = find_source_file("SVE611")
 faturamento_file = find_source_file("SVE660")
+inside_sales_file = find_source_file("Base Dashboard Inside Sales", required=False)
 
 if not pedidos_file or not faturamento_file:
     st.error("Arquivos de dados não encontrados.")
@@ -225,7 +254,11 @@ if not pedidos_file or not faturamento_file:
     st.stop()
 
 try:
-    base = load_data(str(pedidos_file), str(faturamento_file))
+    base = load_data(
+        str(pedidos_file),
+        str(faturamento_file),
+        str(inside_sales_file) if inside_sales_file else None,
+    )
 except Exception as error:
     st.exception(error)
     st.stop()
@@ -245,12 +278,22 @@ def sync_group_with_regional() -> None:
     """Reseta ou preenche Grupo quando a Regional muda."""
     options = groups_for_regional(st.session_state.get("regional_filter", "Todos"))
     st.session_state["grupo_filter"] = options[0] if len(options) == 1 else "Todos"
+    st.session_state["estado_filter"] = "Todos"
+
+
+def clear_filters() -> None:
+    for key in [
+        "period_filter", "regional_filter", "grupo_filter", "status_filter", "estado_filter",
+        "client_search", "pedido_search", "nota_search",
+    ]:
+        st.session_state.pop(key, None)
 
 
 filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
 with filter_col1:
     period = st.date_input(
-        "Período", value=(min_date, max_date), min_value=min_date, max_value=max_date
+        "Período do pedido", value=(min_date, max_date), min_value=min_date,
+        max_value=max_date, key="period_filter"
     )
 with filter_col2:
     regional_filter = st.selectbox(
@@ -271,11 +314,33 @@ with filter_col4:
         "Status", ["Todos", *sorted(base["Status logística"].unique())], key="status_filter"
     )
 
-client_search = st.text_input(
-    "Código do cliente",
-    placeholder="Ex.: C62203",
-    help="A busca é exata, considerando somente o código do cliente.",
-)
+search_col1, search_col2, search_col3, search_col4 = st.columns(4)
+with search_col1:
+    client_search = st.text_input(
+        "Código do cliente", placeholder="Ex.: C62203", key="client_search",
+        help="A busca é exata, considerando somente o código do cliente.",
+    )
+with search_col2:
+    pedido_search = st.text_input("Número do pedido", placeholder="Ex.: 14489800", key="pedido_search")
+with search_col3:
+    nota_search = st.text_input("Número da nota fiscal", placeholder="Ex.: 0144898", key="nota_search")
+with search_col4:
+    is_special = "ESPECIAIS" in regional_filter.upper()
+    state_scope = base[base["Regional"].eq(regional_filter)] if is_special else base.iloc[0:0]
+    state_options = sorted(
+        state_scope.loc[state_scope["Estado"].notna() & state_scope["Estado"].ne(""), "Estado"].unique()
+    )
+    if is_special and state_options:
+        estado_filter = st.selectbox("Estado", ["Todos", *state_options], key="estado_filter")
+    elif is_special:
+        estado_filter = "Todos"
+        st.warning("Envie a base 'Base Dashboard Inside Sales.xlsx' para habilitar Estado.")
+    else:
+        estado_filter = "Todos"
+
+if st.button("Limpar filtros"):
+    clear_filters()
+    st.rerun()
 
 filtered = base.copy()
 if regional_filter != "Todos":
@@ -284,11 +349,18 @@ if grupo_filter != "Todos":
     filtered = filtered[filtered["Grupo"].eq(grupo_filter)]
 if status_filter != "Todos":
     filtered = filtered[filtered["Status logística"].eq(status_filter)]
+if estado_filter != "Todos":
+    filtered = filtered[filtered["Estado"].eq(estado_filter)]
 
 if client_search:
     search = "".join(character for character in client_search.upper() if character.isalnum())
     code = filtered["Código cliente"].fillna("").str.upper().str.replace(r"[^A-Z0-9]", "", regex=True)
     filtered = filtered[code.eq(search)]
+if pedido_search:
+    filtered = filtered[filtered["Pedido"].str.contains(pedido_search.strip(), regex=False, na=False)]
+if nota_search:
+    nota = filtered["Nota fiscal"].fillna("").astype(str)
+    filtered = filtered[nota.str.contains(nota_search.strip(), regex=False, na=False)]
 
 if isinstance(period, tuple) and len(period) == 2:
     start_date, end_date = map(pd.Timestamp, period)
@@ -377,7 +449,8 @@ st.dataframe(
 
 st.subheader("Detalhamento por pedido")
 display_cols = [
-    "Pedido", "Cliente", "Código cliente", "Regional", "Grupo", "Status logística", "NFs",
+    "Pedido", "Nota fiscal", "Cliente", "Código cliente", "Regional", "Grupo", "Estado", "Status logística", "NFs",
+    "Valor pedido", "Valor nota fiscal",
     "Data pedido", "Data faturamento", "Data prevista", "Data entrega",
     "Pedido → faturamento (dias)", "Faturamento → previsão (dias)",
     "Faturamento → entrega (dias)", "Lead time total (dias)",
@@ -390,6 +463,8 @@ st.dataframe(
     hide_index=True,
     use_container_width=True,
     column_config={
+        "Valor pedido": st.column_config.NumberColumn("Valor pedido", format="R$ %.2f"),
+        "Valor nota fiscal": st.column_config.NumberColumn("Valor nota fiscal", format="R$ %.2f"),
         "Data pedido": st.column_config.DateColumn(format="DD/MM/YYYY"),
         "Data faturamento": st.column_config.DateColumn(format="DD/MM/YYYY"),
         "Data prevista": st.column_config.DateColumn(format="DD/MM/YYYY"),
