@@ -9,7 +9,6 @@ import streamlit as st
 st.set_page_config(page_title="Lead Time | Papapa", page_icon="⏱️", layout="wide")
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
 
 
 def clean_text(series: pd.Series) -> pd.Series:
@@ -27,13 +26,13 @@ def find_source_file(prefix: str) -> Path | None:
     """Localiza a única planilha cujo nome começa com o prefixo informado."""
     files = sorted(
         path
-        for path in DATA_DIR.glob("*.xlsx")
+        for path in BASE_DIR.glob("*.xlsx")
         if path.name.upper().startswith(prefix.upper()) and not path.name.startswith("~$")
     )
     if len(files) == 1:
         return files[0]
     if len(files) > 1:
-        st.error(f"Há mais de um arquivo começando com `{prefix}` na pasta `data`.")
+        st.error(f"Há mais de um arquivo começando com `{prefix}` na raiz do projeto.")
         st.info("Mantenha apenas a versão mais recente de cada base antes de fazer o commit.")
         st.stop()
     return None
@@ -84,6 +83,8 @@ def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
                 "Data faturamento": ("Data faturamento", "min"),
                 "Data prevista": ("Data prevista", "max"),
                 "Data entrega": ("Data entrega", "max"),
+                "Código cliente NF": ("Código cliente NF", "first"),
+                "Cliente NF": ("Cliente NF", "first"),
                 "Regional": ("Regional", "first"),
                 "Grupo": ("Grupo", "first"),
             }
@@ -91,8 +92,14 @@ def load_data(pedidos_path: str, faturamento_path: str) -> pd.DataFrame:
     )
 
     df = pedidos.merge(faturamento_resumo, how="left", on="Pedido")
-    df["Regional"] = df["Regional"].fillna("Sem regional")
-    df["Grupo"] = df["Grupo"].fillna("Sem grupo")
+    # O cliente da SVE660 (coluna F) é a referência preferida para os filtros.
+    # Pedidos ainda não faturados mantêm o cliente informado na SVE611.
+    df["Cliente"] = df["Cliente NF"].where(df["Cliente NF"].ne(""), df["Cliente"])
+    df["Código cliente"] = df["Código cliente NF"].where(
+        df["Código cliente NF"].ne(""), df["Código cliente"]
+    )
+    df["Regional"] = df["Regional"].replace("", pd.NA).fillna("Sem regional")
+    df["Grupo"] = df["Grupo"].replace("", pd.NA).fillna("Sem grupo")
     df["NFs"] = df["NFs"].fillna(0).astype(int)
 
     df["Pedido → faturamento (dias)"] = (
@@ -143,9 +150,9 @@ faturamento_file = find_source_file("SVE660")
 if not pedidos_file or not faturamento_file:
     st.error("Arquivos de dados não encontrados.")
     st.markdown(
-        "Crie a pasta `data` ao lado do arquivo `app.py` e envie uma planilha de cada tipo:"
+        "Envie uma planilha de cada tipo na mesma pasta do arquivo `app.py`:"
     )
-    st.code("data/SVE611V (71).xlsx\ndata/SVE660V.xlsx", language="text")
+    st.code("SVE611V (71).xlsx\nSVE660V.xlsx", language="text")
     st.info("Os nomes só precisam começar com SVE611 e SVE660. Substitua os dois arquivos diariamente no GitHub e mantenha uma versão de cada base.")
     st.stop()
 
@@ -280,4 +287,3 @@ st.dataframe(
 
 csv = detail.to_csv(index=False).encode("utf-8-sig")
 st.download_button("Baixar dados filtrados (CSV)", data=csv, file_name="leadtime_filtrado.csv", mime="text/csv")
-
