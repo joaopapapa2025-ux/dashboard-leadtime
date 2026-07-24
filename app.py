@@ -29,6 +29,11 @@ VENDEDORES_ESPECIAIS = {
     "BERNARDO OLIVEIRA DALLEGRAVE",
     "JOAO VITOR TADRA",
 }
+ORIGENS_SVE660 = {
+    "102": "102 - Venda B2B",
+    "205": "205 - Venda E-commerce",
+    "122": "122 - Bonificação",
+}
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -157,10 +162,11 @@ def load_data(
         & ~pedidos["Situação pedido"].isin(["CAN", "REP"])
     ].copy()
 
-    faturamento_all = pd.DataFrame(
+    faturamento_base = pd.DataFrame(
         {
             "Data faturamento": parse_date(faturamento_raw.iloc[:, 0]),
             "Nota fiscal": clean_text(faturamento_raw.iloc[:, 1]),
+            "Código origem": clean_text(faturamento_raw.iloc[:, 3]).str.replace(r"\.0$", "", regex=True),
             "Código cliente NF": clean_text(faturamento_raw.iloc[:, 4]),
             "Cliente NF": clean_text(faturamento_raw.iloc[:, 5]),
             "Data prevista": parse_date(faturamento_raw.iloc[:, 11]),
@@ -172,6 +178,13 @@ def load_data(
             "Grupo": clean_text(faturamento_raw.iloc[:, 33]),
         }
     )
+    faturamento_base["Origem"] = faturamento_base["Código origem"].map(ORIGENS_SVE660)
+    pedidos_origem_fora_escopo = set(
+        faturamento_base.loc[
+            faturamento_base["Pedido"].ne("") & faturamento_base["Origem"].isna(), "Pedido"
+        ]
+    )
+    faturamento_all = faturamento_base[faturamento_base["Origem"].notna()].copy()
 
     client_dimension = (
         faturamento_all[faturamento_all["Código cliente NF"].ne("")]
@@ -189,6 +202,7 @@ def load_data(
     )
 
     faturamento = faturamento_all[faturamento_all["Pedido"].ne("")].copy()
+    pedidos_origem_permitida = set(faturamento["Pedido"])
     faturamento_resumo = (
         faturamento.groupby("Pedido", as_index=False)
         .agg(
@@ -204,11 +218,16 @@ def load_data(
                 "Cliente NF": ("Cliente NF", "first"),
                 "Regional": ("Regional", "first"),
                 "Grupo": ("Grupo", "first"),
+                "Origem": ("Origem", lambda values: " | ".join(sorted(set(values.dropna())))),
             }
         )
     )
 
     df = pedidos.merge(faturamento_resumo, how="left", on="Pedido")
+    # Se um pedido já foi faturado somente em uma origem fora do escopo, ele não
+    # deve reaparecer indevidamente como aguardando faturamento.
+    pedidos_exclusivos_fora_escopo = pedidos_origem_fora_escopo - pedidos_origem_permitida
+    df = df[~df["Pedido"].isin(pedidos_exclusivos_fora_escopo)].copy()
     df = df.merge(client_dimension, how="left", on="Código cliente")
 
     if inside_sales_path:
@@ -247,6 +266,7 @@ def load_data(
     df.loc[is_special_team, "Grupo"] = "ESPECIAIS"
 
     df["Estado"] = df["Estado"].replace("", pd.NA).fillna("Não informado")
+    df["Origem"] = df["Origem"].replace("", pd.NA).fillna("Origem não identificada (aguardando faturamento)")
     df["NFs"] = df["NFs"].fillna(0).astype(int)
     df["Nota fiscal"] = df["Nota fiscal"].fillna("")
     df["Valor nota fiscal"] = df["Valor nota fiscal"].fillna(0.0)
@@ -318,7 +338,7 @@ def prepare_multiselect(key: str, options: list[str], auto_single: bool = False)
 
 def clear_filters() -> None:
     for key in [
-        "period_filter", "regional_filter", "grupo_filter", "vendedor_filter", "status_filter",
+        "period_filter", "regional_filter", "grupo_filter", "vendedor_filter", "status_filter", "origem_filter",
         "estado_filter", "client_search", "pedido_search", "nota_search",
     ]:
         st.session_state.pop(key, None)
@@ -383,7 +403,7 @@ def show_detail(
         return
     st.markdown(f"#### {title}")
     detail_cols = [
-        "Pedido", "Nota fiscal", "Cliente", "Código cliente", "Vendedor", "Regional", "Grupo", "Estado",
+        "Pedido", "Nota fiscal", "Cliente", "Código cliente", "Origem", "Vendedor", "Regional", "Grupo", "Estado",
         "Valor pedido", "Valor nota fiscal", "Data pedido", "Data faturamento", "Data solicitada cliente",
         "Previsão por estado", "Data prevista", "Prazo SLA", "Data entrega",
         "Pedido → faturamento (dias)", "Atraso entrega (dias)", "Situação SLA", "Status logística",
@@ -485,8 +505,10 @@ vendor_options = sorted(vendor_scope["Vendedor"].dropna().unique().tolist())
 vendor_current = prepare_multiselect("vendedor_filter", vendor_options)
 status_options = sorted(base["Status logística"].dropna().unique().tolist())
 status_current = prepare_multiselect("status_filter", status_options)
+origem_options = sorted(base["Origem"].dropna().unique().tolist())
+origem_current = prepare_multiselect("origem_filter", origem_options)
 
-filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns(5)
+filter_col1, filter_col2, filter_col3, filter_col4, filter_col5, filter_col6 = st.columns(6)
 with filter_col1:
     period = st.date_input("Período do pedido", value=(min_date, max_date), min_value=min_date, max_value=max_date, key="period_filter")
 with filter_col2:
@@ -497,6 +519,8 @@ with filter_col4:
     vendedor_filter = st.multiselect("Vendedor", [ALL, *vendor_options], default=vendor_current, key="vendedor_filter")
 with filter_col5:
     status_filter = st.multiselect("Status", [ALL, *status_options], default=status_current, key="status_filter")
+with filter_col6:
+    origem_filter = st.multiselect("Origem", [ALL, *origem_options], default=origem_current, key="origem_filter")
 
 search_col1, search_col2, search_col3, search_col4, search_col5 = st.columns(5)
 with search_col1:
@@ -524,6 +548,7 @@ filtered = filter_by_selection(base, "Regional", regional_filter)
 filtered = filter_by_selection(filtered, "Grupo", grupo_filter)
 filtered = filter_by_selection(filtered, "Vendedor", vendedor_filter)
 filtered = filter_by_selection(filtered, "Status logística", status_filter)
+filtered = filter_by_selection(filtered, "Origem", origem_filter)
 if selected_values(estado_filter):
     special_rows = filtered["Regional"].str.contains("ESPECIAIS", case=False, na=False)
     filtered = filtered[~special_rows | filtered["Estado"].isin(selected_values(estado_filter))]
