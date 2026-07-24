@@ -527,8 +527,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 historical, present = st.tabs([
-    "📊 Histórico — resultados concluídos",
-    "⚡ Presente — pedidos em andamento",
+    "Histórico",
+    "Presente",
 ])
 
 with historical:
