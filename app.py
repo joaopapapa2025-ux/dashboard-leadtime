@@ -482,32 +482,36 @@ with st.expander("Referência de lead time por estado"):
         "Lead time médio por estado (dias úteis)": st.column_config.NumberColumn(format="%.2f")
     })
 
-st.markdown("## Escolha a visão de análise")
-st.caption("Use **Histórico** para avaliar resultados concluídos ou **Presente** para atuar nos pedidos em andamento.")
+st.markdown("### Visão do painel")
+st.caption("Escolha entre resultados concluídos e pedidos que ainda exigem acompanhamento.")
 st.markdown(
     """
     <style>
     div[data-testid="stTabs"] [data-baseweb="tab-list"] {
-        gap: 12px;
-        background: #f4f6fa;
-        border-radius: 12px;
-        padding: 8px;
-        margin-top: 8px;
-        margin-bottom: 20px;
+        gap: 8px;
+        background: #f8fafc;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 6px;
+        margin-top: 6px;
+        margin-bottom: 18px;
     }
     div[data-testid="stTabs"] [data-baseweb="tab"] {
-        height: 52px;
-        padding: 0 30px;
-        border-radius: 9px;
+        height: 46px;
+        min-width: 170px;
+        justify-content: center;
+        padding: 0 24px;
+        border-radius: 7px;
         background: transparent;
-        color: #334155;
-        font-size: 18px;
-        font-weight: 700;
+        color: #64748b;
+        font-size: 16px;
+        font-weight: 600;
     }
     div[data-testid="stTabs"] [aria-selected="true"] {
-        background: #1d4ed8;
-        color: white;
-        box-shadow: 0 2px 7px rgba(29, 78, 216, .25);
+        background: #fff7f3;
+        color: #9a4f38;
+        border: 1px solid #f1d4c8;
+        box-shadow: 0 1px 3px rgba(84, 55, 43, .08);
     }
     div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
         display: none;
