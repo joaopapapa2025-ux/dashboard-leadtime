@@ -14,6 +14,15 @@ BASE_DIR = Path(__file__).resolve().parent
 ALL = "Todos"
 META_FATURAMENTO_DIAS = 2
 META_NIVEL_SERVICO = 0.96
+VENDEDORES_ESPECIAIS = {
+    "PEDRO HENRIQUE KRUGER BORN",
+    "RODRIGO DOS REIS E SARLO",
+    "JOAO PAULO FERREIRA ALVES",
+    "ANA CHRISTINA RODRIGUES",
+    "THIAGO MARTINS CABRAL",
+    "BERNARDO OLIVEIRA DALLEGRAVE",
+    "JOAO VITOR TADRA",
+}
 
 
 def clean_text(series: pd.Series) -> pd.Series:
@@ -104,6 +113,7 @@ def load_data(
             "Código cliente": clean_text(pedidos_raw.iloc[:, 5]),
             "Cliente": clean_text(pedidos_raw.iloc[:, 6]),
             "Vendedor": clean_text(pedidos_raw.iloc[:, 8]),
+            "Vendedor interno": clean_text(pedidos_raw.iloc[:, 21]),  # Coluna V
             "Data pedido": parse_date(pedidos_raw.iloc[:, 9]),
             "Valor pedido": parse_brl_number(pedidos_raw.iloc[:, 13]),
         }
@@ -190,6 +200,18 @@ def load_data(
     df["Grupo"] = df["Grupo"].replace("", pd.NA).fillna(df["Grupo cadastro"])
     df["Regional"] = df["Regional"].replace("", pd.NA).fillna("Não informado")
     df["Grupo"] = df["Grupo"].replace("", pd.NA).fillna("Não informado")
+
+    # Regra comercial: a equipe indicada deve ser sempre classificada como Especiais.
+    # A comparação também considera a coluna I porque parte dos nomes históricos
+    # aparece nela, embora a origem principal da regra seja a coluna V.
+    team_normalized = {name.casefold() for name in VENDEDORES_ESPECIAIS}
+    is_special_team = (
+        df["Vendedor interno"].str.casefold().isin(team_normalized)
+        | df["Vendedor"].str.casefold().isin(team_normalized)
+    )
+    df.loc[is_special_team, "Regional"] = "ESPECIAIS - BR"
+    df.loc[is_special_team, "Grupo"] = "ESPECIAIS"
+
     df["Estado"] = df["Estado"].replace("", pd.NA).fillna("Não informado")
     df["NFs"] = df["NFs"].fillna(0).astype(int)
     df["Nota fiscal"] = df["Nota fiscal"].fillna("")
