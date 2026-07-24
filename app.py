@@ -454,17 +454,6 @@ if filtered.empty:
     st.warning("Nenhum pedido encontrado para os filtros selecionados.")
     st.stop()
 
-orders = len(filtered)
-faturados = int(filtered["Data faturamento"].notna().sum())
-entregues = int(filtered["Data entrega"].notna().sum())
-no_prazo = int((filtered["Status logística"] == "Entregue no prazo").sum())
-metric1, metric2, metric3, metric4, metric5 = st.columns(5)
-metric1.metric("Pedidos", f"{orders:,}".replace(",", "."))
-metric2.metric("Faturados", f"{faturados:,}".replace(",", "."))
-metric3.metric("Entregues", f"{entregues:,}".replace(",", "."))
-metric4.metric("Nível de serviço", f"{no_prazo / entregues:.0%}" if entregues else "—")
-metric5.metric("Lead time total médio", f"{filtered['Lead time total (dias)'].mean():.2f} dias" if entregues else "—")
-
 with st.expander("Referência de lead time por estado"):
     st.caption("Média do campo 'Lead time total' da tabela operacional, em dias úteis. Ela é usada quando não há data solicitada pelo cliente.")
     st.dataframe(state_lead, hide_index=True, use_container_width=True, column_config={
@@ -488,7 +477,7 @@ with historical:
         )
     )
     billing_summary["Meta (dias)"] = META_FATURAMENTO_DIAS
-    billing_summary["Desvio (dias)"] = billing_summary["Média de faturamento (dias)"] - META_FATURAMENTO_DIAS
+    billing_summary["Diferença para a meta (dias)"] = billing_summary["Média de faturamento (dias)"] - META_FATURAMENTO_DIAS
     billing_summary["Status"] = np.select(
         [billing_summary["Média de faturamento (dias)"] <= META_FATURAMENTO_DIAS,
          billing_summary["Média de faturamento (dias)"] <= META_FATURAMENTO_DIAS + 1],
@@ -496,15 +485,30 @@ with historical:
         default="🔴 Prazo acima do esperado",
     )
     billing_summary = billing_summary.sort_values("Média de faturamento (dias)", ascending=False)
+    billing_total_mean = history_billing["Pedido → faturamento (dias)"].mean()
+    billing_total_status = (
+        "🟢 Dentro do prazo" if billing_total_mean <= META_FATURAMENTO_DIAS
+        else "🟡 Próximo ao limite" if billing_total_mean <= META_FATURAMENTO_DIAS + 1
+        else "🔴 Prazo acima do esperado"
+    )
+    billing_total = pd.DataFrame([{
+        "Regional": "TOTAL",
+        "Média de faturamento (dias)": billing_total_mean,
+        "Pedidos faturados": len(history_billing),
+        "Meta (dias)": META_FATURAMENTO_DIAS,
+        "Diferença para a meta (dias)": billing_total_mean - META_FATURAMENTO_DIAS,
+        "Status": billing_total_status,
+    }])
+    billing_summary = pd.concat([billing_summary, billing_total], ignore_index=True)
 
     st.subheader("Tempo médio de faturamento por regional")
     table_with_status(billing_summary, column_config={
         "Média de faturamento (dias)": st.column_config.NumberColumn(format="%.2f"),
         "Meta (dias)": st.column_config.NumberColumn(format="%.2f"),
-        "Desvio (dias)": st.column_config.NumberColumn(format="%.2f"),
+        "Diferença para a meta (dias)": st.column_config.NumberColumn(format="%.2f"),
     })
     billing_chart = px.bar(
-        billing_summary, x="Regional", y="Média de faturamento (dias)", color="Status",
+        billing_summary[billing_summary["Regional"].ne("TOTAL")], x="Regional", y="Média de faturamento (dias)", color="Status",
         color_discrete_map={"🟢 Dentro do prazo": "#16a34a", "🟡 Próximo ao limite": "#f59e0b", "🔴 Prazo acima do esperado": "#dc2626"},
         hover_data=["Pedidos faturados", "Meta (dias)"], title="Clique em uma barra para ver os pedidos",
     )
@@ -527,13 +531,28 @@ with historical:
         "🟢 Meta de serviço atingida", "🔴 Meta de serviço não atingida",
     )
     service_summary = service_summary.sort_values("Nível de serviço")
+    total_service_orders = int(service_summary["Pedidos"].sum())
+    total_on_time = int(service_summary["Entregues_no_prazo"].sum())
+    total_service_level = total_on_time / total_service_orders if total_service_orders else 0
+    service_total = pd.DataFrame([{
+        "Regional": "TOTAL",
+        "Pedidos": total_service_orders,
+        "Entregues_no_prazo": total_on_time,
+        "Nível de serviço": total_service_level,
+        "Meta": META_NIVEL_SERVICO,
+        "Status": "🟢 Meta de serviço atingida" if total_service_level >= META_NIVEL_SERVICO else "🔴 Meta de serviço não atingida",
+    }])
+    service_summary = pd.concat([service_summary, service_total], ignore_index=True)
     service_display = service_summary.copy()
     service_display["Nível de serviço (%)"] = service_display["Nível de serviço"] * 100
     service_display["Meta (%)"] = service_display["Meta"] * 100
     service_display = service_display.drop(columns=["Nível de serviço", "Meta"])
+    service_display = service_display[[
+        "Regional", "Pedidos", "Entregues_no_prazo", "Nível de serviço (%)", "Meta (%)", "Status"
+    ]]
 
     st.subheader("Nível de serviço por regional")
-    if service_summary.empty:
+    if history_service.empty:
         st.info("Não há entregas com prazo SLA disponível nos filtros atuais.")
     else:
         table_with_status(service_display, column_config={
@@ -541,7 +560,7 @@ with historical:
             "Meta (%)": st.column_config.NumberColumn(format="%.2f%%"),
         })
         service_chart = px.bar(
-            service_summary, x="Regional", y="Nível de serviço", color="Status",
+            service_summary[service_summary["Regional"].ne("TOTAL")], x="Regional", y="Nível de serviço", color="Status",
             color_discrete_map={"🟢 Meta de serviço atingida": "#16a34a", "🔴 Meta de serviço não atingida": "#dc2626"},
             hover_data=["Pedidos", "Entregues_no_prazo"], title="Clique em uma barra para ver os pedidos",
         )
@@ -564,10 +583,14 @@ with present:
         .reindex(columns=["Menos de 2 dias", "De 2 a 4 dias", "Mais de 4 dias"], fill_value=0)
         .reset_index()
     )
+    billing_aging_total = {"Regional": "TOTAL", **{
+        column: int(billing_aging[column].sum()) for column in billing_aging.columns if column != "Regional"
+    }}
+    billing_aging = pd.concat([billing_aging, pd.DataFrame([billing_aging_total])], ignore_index=True)
 
     st.subheader("Pedidos aguardando faturamento")
     st.dataframe(billing_aging, hide_index=True, use_container_width=True)
-    billing_aging_long = billing_aging.melt(id_vars="Regional", var_name="Faixa", value_name="Pedidos")
+    billing_aging_long = billing_aging[billing_aging["Regional"].ne("TOTAL")].melt(id_vars="Regional", var_name="Faixa", value_name="Pedidos")
     billing_aging_chart = px.bar(billing_aging_long, x="Regional", y="Pedidos", color="Faixa", barmode="stack", title="Clique em uma barra para ver os pedidos")
     pending_billing_event = st.plotly_chart(billing_aging_chart, use_container_width=True, key="pending_billing_chart", on_select="rerun", selection_mode="points")
     pending_billing_region = chart_selected_regional(pending_billing_event)
@@ -582,10 +605,14 @@ with present:
         .reindex(columns=delivery_columns, fill_value=0)
         .reset_index()
     )
+    delivery_aging_total = {"Regional": "TOTAL", **{
+        column: int(delivery_aging[column].sum()) for column in delivery_aging.columns if column != "Regional"
+    }}
+    delivery_aging = pd.concat([delivery_aging, pd.DataFrame([delivery_aging_total])], ignore_index=True)
 
     st.subheader("Pedidos faturados aguardando entrega")
     st.dataframe(delivery_aging, hide_index=True, use_container_width=True)
-    delivery_aging_long = delivery_aging.melt(id_vars="Regional", var_name="Faixa", value_name="Pedidos")
+    delivery_aging_long = delivery_aging[delivery_aging["Regional"].ne("TOTAL")].melt(id_vars="Regional", var_name="Faixa", value_name="Pedidos")
     delivery_aging_chart = px.bar(delivery_aging_long, x="Regional", y="Pedidos", color="Faixa", barmode="stack", title="Clique em uma barra para ver os pedidos")
     pending_delivery_event = st.plotly_chart(delivery_aging_chart, use_container_width=True, key="pending_delivery_chart", on_select="rerun", selection_mode="points")
     pending_delivery_region = chart_selected_regional(pending_delivery_event)
