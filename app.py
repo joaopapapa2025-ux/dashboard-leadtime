@@ -423,9 +423,9 @@ st.title("Lead Time da Operação")
 if faturamento_file:
     last_update = format_last_update(github_file_last_update(faturamento_file.name))
     if last_update:
-        st.caption(f"🕒 Última atualização da SVE660: {last_update}")
+        st.caption(f"🕒 Última atualização: {last_update}")
     else:
-        st.caption("🕒 Última atualização da SVE660: não identificada no GitHub")
+        st.caption("🕒 Última atualização: não identificada no GitHub")
 
 if not pedidos_file or not faturamento_file:
     st.error("Envie as bases SVE611 e SVE660 na mesma pasta do arquivo app.py.")
