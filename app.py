@@ -710,7 +710,12 @@ with historical:
         service_chart.update_yaxes(tickformat=".0%", range=[0, 1])
         service_chart.add_hline(y=META_NIVEL_SERVICO, line_dash="dash", line_color="#dc2626", annotation_text="Meta: 96%")
         service_event = st.plotly_chart(service_chart, use_container_width=True, key="service_chart", on_select="rerun", selection_mode="points")
-        service_region = chart_selected_regional(service_event)
+        selected_service_region = chart_selected_regional(service_event)
+        if selected_service_region:
+            if st.session_state.get("service_detail_region") != selected_service_region:
+                st.session_state["service_detail_filter"] = "Todos"
+            st.session_state["service_detail_region"] = selected_service_region
+        service_region = st.session_state.get("service_detail_region")
         if service_region:
             service_detail = history_service[history_service["Regional"].eq(service_region)].copy()
             service_detail = service_detail.sort_values(
@@ -718,12 +723,26 @@ with historical:
             )
             late_deliveries = int((~service_detail["No prazo"]).sum())
             on_time_deliveries = int(service_detail["No prazo"].sum())
-            st.caption(
-                f"{late_deliveries} entrega(s) fora do prazo e "
-                f"{on_time_deliveries} entrega(s) no prazo. As entregas fora do prazo aparecem primeiro."
-            )
+            st.markdown(f"**Detalhar entregas — {service_region}**")
+            service_button_all, service_button_on_time, service_button_late = st.columns(3)
+            with service_button_all:
+                if st.button(f"Todos ({len(service_detail)})", key="service_detail_all"):
+                    st.session_state["service_detail_filter"] = "Todos"
+            with service_button_on_time:
+                if st.button(f"Entregues no prazo ({on_time_deliveries})", key="service_detail_on_time"):
+                    st.session_state["service_detail_filter"] = "No prazo"
+            with service_button_late:
+                if st.button(f"Entregues fora do prazo ({late_deliveries})", key="service_detail_late"):
+                    st.session_state["service_detail_filter"] = "Fora do prazo"
+
+            service_filter = st.session_state.get("service_detail_filter", "Todos")
+            if service_filter == "No prazo":
+                service_detail = service_detail[service_detail["No prazo"]]
+            elif service_filter == "Fora do prazo":
+                service_detail = service_detail[~service_detail["No prazo"]]
+            st.caption(f"Exibindo: {service_filter}. O prazo comparado é o SLA de cada pedido.")
             show_detail(
-                f"Pedidos usados no nível de serviço — {service_region}",
+                f"Pedidos usados no nível de serviço — {service_region} ({service_filter})",
                 service_detail,
                 "historico_servico",
             )
@@ -768,15 +787,51 @@ with present:
     delivery_aging = pd.concat([delivery_aging, pd.DataFrame([delivery_aging_total])], ignore_index=True)
 
     st.subheader("Pedidos faturados aguardando entrega")
+    st.caption(
+        "Prazo usado nesta tabela: data solicitada pelo cliente; se ela não existir, "
+        "previsão calculada pela média de lead time do estado; por último, data prevista da transportadora."
+    )
     st.dataframe(delivery_aging.style.apply(total_row_style, axis=1), hide_index=True, use_container_width=True)
     delivery_aging_long = delivery_aging[delivery_aging["Regional"].ne("TOTAL")].melt(id_vars="Regional", var_name="Faixa", value_name="Pedidos")
     delivery_aging_chart = px.bar(delivery_aging_long, x="Regional", y="Pedidos", color="Faixa", barmode="stack", title="Clique em uma barra para ver os pedidos")
     pending_delivery_event = st.plotly_chart(delivery_aging_chart, use_container_width=True, key="pending_delivery_chart", on_select="rerun", selection_mode="points")
-    pending_delivery_region = chart_selected_regional(pending_delivery_event)
+    selected_pending_delivery_region = chart_selected_regional(pending_delivery_event)
+    if selected_pending_delivery_region:
+        if st.session_state.get("pending_delivery_detail_region") != selected_pending_delivery_region:
+            st.session_state["pending_delivery_detail_filter"] = "Todos"
+        st.session_state["pending_delivery_detail_region"] = selected_pending_delivery_region
+    pending_delivery_region = st.session_state.get("pending_delivery_detail_region")
     if pending_delivery_region:
+        pending_delivery_detail = pending_delivery[pending_delivery["Regional"].eq(pending_delivery_region)].copy()
+        within_deadline = pending_delivery_detail["Atraso atual (dias)"].le(0)
+        late_delivery = pending_delivery_detail["Atraso atual (dias)"].gt(0)
+        no_sla = pending_delivery_detail["Atraso atual (dias)"].isna()
+        st.markdown(f"**Detalhar acompanhamento de entrega — {pending_delivery_region}**")
+        delivery_button_all, delivery_button_on_time, delivery_button_late, delivery_button_no_sla = st.columns(4)
+        with delivery_button_all:
+            if st.button(f"Todos ({len(pending_delivery_detail)})", key="pending_delivery_all"):
+                st.session_state["pending_delivery_detail_filter"] = "Todos"
+        with delivery_button_on_time:
+            if st.button(f"Dentro do prazo ({int(within_deadline.sum())})", key="pending_delivery_on_time"):
+                st.session_state["pending_delivery_detail_filter"] = "Dentro do prazo"
+        with delivery_button_late:
+            if st.button(f"Em atraso ({int(late_delivery.sum())})", key="pending_delivery_late"):
+                st.session_state["pending_delivery_detail_filter"] = "Em atraso"
+        with delivery_button_no_sla:
+            if st.button(f"Sem prazo SLA ({int(no_sla.sum())})", key="pending_delivery_no_sla"):
+                st.session_state["pending_delivery_detail_filter"] = "Sem prazo SLA"
+
+        pending_filter = st.session_state.get("pending_delivery_detail_filter", "Todos")
+        if pending_filter == "Dentro do prazo":
+            pending_delivery_detail = pending_delivery_detail[within_deadline]
+        elif pending_filter == "Em atraso":
+            pending_delivery_detail = pending_delivery_detail[late_delivery]
+        elif pending_filter == "Sem prazo SLA":
+            pending_delivery_detail = pending_delivery_detail[no_sla]
+        st.caption(f"Exibindo: {pending_filter}. Este é o atraso calculado até a data de hoje.")
         show_detail(
-            f"Pedidos aguardando entrega — {pending_delivery_region}",
-            pending_delivery[pending_delivery["Regional"].eq(pending_delivery_region)],
+            f"Pedidos aguardando entrega — {pending_delivery_region} ({pending_filter})",
+            pending_delivery_detail,
             "presente_aguardando_entrega",
             include_current_delay=True,
         )
