@@ -228,9 +228,8 @@ def load_data(
     # deve reaparecer indevidamente como aguardando faturamento.
     pedidos_exclusivos_fora_escopo = pedidos_origem_fora_escopo - pedidos_origem_permitida
     df = df[~df["Pedido"].isin(pedidos_exclusivos_fora_escopo)].copy()
-    # A origem é determinada pela SVE660. Sem uma das três origens autorizadas,
-    # o pedido fica completamente fora do painel.
-    df = df[df["Origem"].notna()].copy()
+    # Pedidos ainda sem faturamento permanecem no acompanhamento do Presente.
+    # Eles não recebem rótulo de origem porque ainda não possuem registro na SVE660.
     df = df.merge(client_dimension, how="left", on="Código cliente")
 
     if inside_sales_path:
