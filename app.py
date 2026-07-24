@@ -482,6 +482,40 @@ with st.expander("Referência de lead time por estado"):
         "Lead time médio por estado (dias úteis)": st.column_config.NumberColumn(format="%.2f")
     })
 
+st.markdown("## Escolha a visão de análise")
+st.caption("Use **Histórico** para avaliar resultados concluídos ou **Presente** para atuar nos pedidos em andamento.")
+st.markdown(
+    """
+    <style>
+    div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+        gap: 12px;
+        background: #f4f6fa;
+        border-radius: 12px;
+        padding: 8px;
+        margin-top: 8px;
+        margin-bottom: 20px;
+    }
+    div[data-testid="stTabs"] [data-baseweb="tab"] {
+        height: 52px;
+        padding: 0 30px;
+        border-radius: 9px;
+        background: transparent;
+        color: #334155;
+        font-size: 18px;
+        font-weight: 700;
+    }
+    div[data-testid="stTabs"] [aria-selected="true"] {
+        background: #1d4ed8;
+        color: white;
+        box-shadow: 0 2px 7px rgba(29, 78, 216, .25);
+    }
+    div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+        display: none;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 historical, present = st.tabs(["Histórico", "Presente"])
 
 with historical:
