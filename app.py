@@ -330,6 +330,8 @@ def to_excel(data: pd.DataFrame, sheet_name: str) -> bytes:
 
 def status_color(value: str) -> str:
     value = str(value).casefold()
+    if "não atingida" in value or "acima" in value:
+        return "background-color: #fee2e2; color: #991b1b"
     if "dentro" in value or "atingida" in value:
         return "background-color: #d1fae5; color: #065f46"
     if "limite" in value:
@@ -337,9 +339,15 @@ def status_color(value: str) -> str:
     return "background-color: #fee2e2; color: #991b1b"
 
 
+def total_row_style(row: pd.Series) -> list[str]:
+    if str(row.get("Regional", "")).upper() == "TOTAL":
+        return ["background-color: #eef1f4; color: #1f2937; font-weight: 700; border-top: 1px solid #cbd5e1"] * len(row)
+    return [""] * len(row)
+
+
 def table_with_status(data: pd.DataFrame, column_config: dict | None = None) -> None:
     st.dataframe(
-        data.style.map(status_color, subset=["Status"]),
+        data.style.map(status_color, subset=["Status"]).apply(total_row_style, axis=1),
         hide_index=True,
         use_container_width=True,
         column_config=column_config,
@@ -423,9 +431,9 @@ st.title("Lead Time da Operação")
 if faturamento_file:
     last_update = format_last_update(github_file_last_update(faturamento_file.name))
     if last_update:
-        st.caption(f"🕒 Última atualização: {last_update}")
+        st.caption(f"🕒 Última atualização da SVE660: {last_update}")
     else:
-        st.caption("🕒 Última atualização: não identificada no GitHub")
+        st.caption("🕒 Última atualização da SVE660: não identificada no GitHub")
 
 if not pedidos_file or not faturamento_file:
     st.error("Envie as bases SVE611 e SVE660 na mesma pasta do arquivo app.py.")
@@ -572,8 +580,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 historical, present = st.tabs([
-    "Histórico - resultados concluídos",
-    "Presente - pedidos em andamento",
+    "Histórico — resultados concluídos",
+    "Presente — pedidos em andamento",
 ])
 
 with historical:
@@ -703,7 +711,7 @@ with present:
     billing_aging = pd.concat([billing_aging, pd.DataFrame([billing_aging_total])], ignore_index=True)
 
     st.subheader("Pedidos aguardando faturamento")
-    st.dataframe(billing_aging, hide_index=True, use_container_width=True)
+    st.dataframe(billing_aging.style.apply(total_row_style, axis=1), hide_index=True, use_container_width=True)
     billing_aging_long = billing_aging[billing_aging["Regional"].ne("TOTAL")].melt(id_vars="Regional", var_name="Faixa", value_name="Pedidos")
     billing_aging_chart = px.bar(billing_aging_long, x="Regional", y="Pedidos", color="Faixa", barmode="stack", title="Clique em uma barra para ver os pedidos")
     pending_billing_event = st.plotly_chart(billing_aging_chart, use_container_width=True, key="pending_billing_chart", on_select="rerun", selection_mode="points")
@@ -725,7 +733,7 @@ with present:
     delivery_aging = pd.concat([delivery_aging, pd.DataFrame([delivery_aging_total])], ignore_index=True)
 
     st.subheader("Pedidos faturados aguardando entrega")
-    st.dataframe(delivery_aging, hide_index=True, use_container_width=True)
+    st.dataframe(delivery_aging.style.apply(total_row_style, axis=1), hide_index=True, use_container_width=True)
     delivery_aging_long = delivery_aging[delivery_aging["Regional"].ne("TOTAL")].melt(id_vars="Regional", var_name="Faixa", value_name="Pedidos")
     delivery_aging_chart = px.bar(delivery_aging_long, x="Regional", y="Pedidos", color="Faixa", barmode="stack", title="Clique em uma barra para ver os pedidos")
     pending_delivery_event = st.plotly_chart(delivery_aging_chart, use_container_width=True, key="pending_delivery_chart", on_select="rerun", selection_mode="points")
