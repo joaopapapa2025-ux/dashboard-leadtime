@@ -363,7 +363,12 @@ def chart_selected_regional(event: object) -> str | None:
         return None
 
 
-def show_detail(title: str, data: pd.DataFrame, key: str) -> None:
+def show_detail(
+    title: str,
+    data: pd.DataFrame,
+    key: str,
+    include_current_delay: bool = False,
+) -> None:
     if data.empty:
         st.info("Não há pedidos para este detalhamento.")
         return
@@ -371,9 +376,14 @@ def show_detail(title: str, data: pd.DataFrame, key: str) -> None:
     detail_cols = [
         "Pedido", "Nota fiscal", "Cliente", "Código cliente", "Vendedor", "Regional", "Grupo", "Estado",
         "Valor pedido", "Valor nota fiscal", "Data pedido", "Data faturamento", "Data solicitada cliente",
-        "Previsão por estado", "Data prevista", "Prazo SLA", "Fonte prazo SLA", "Data entrega",
-        "Pedido → faturamento (dias)", "Atraso entrega (dias)", "Atraso atual (dias)", "Status logística",
+        "Previsão por estado", "Data prevista", "Prazo SLA", "Data entrega",
+        "Pedido → faturamento (dias)", "Atraso entrega (dias)", "Situação SLA", "Status logística",
     ]
+    # Atraso atual é uma leitura de hoje e, portanto, só faz sentido para pedidos em aberto.
+    if include_current_delay:
+        detail_cols.append("Atraso atual (dias)")
+    # Mantém a origem do prazo como a última informação da tabela, conforme a leitura do painel.
+    detail_cols.append("Fonte prazo SLA")
     detail = data[[column for column in detail_cols if column in data.columns]].copy()
     st.dataframe(
         detail,
@@ -642,6 +652,9 @@ with historical:
 
     history_service = filtered[filtered["Data entrega"].notna() & filtered["Prazo SLA"].notna()].copy()
     history_service["No prazo"] = history_service["Data entrega"] <= history_service["Prazo SLA"]
+    history_service["Situação SLA"] = np.where(
+        history_service["No prazo"], "Entregue no prazo", "Entregue fora do prazo"
+    )
     service_summary = (
         history_service.groupby("Regional", as_index=False)
         .agg(Pedidos=("Pedido", "size"), Entregues_no_prazo=("No prazo", "sum"))
@@ -669,14 +682,22 @@ with historical:
     service_display["Nível de serviço (%)"] = service_display["Nível de serviço"] * 100
     service_display["Meta (%)"] = service_display["Meta"] * 100
     service_display = service_display.drop(columns=["Nível de serviço", "Meta"])
+    service_display = service_display.rename(columns={
+        "Pedidos": "Entregues elegíveis",
+        "Entregues_no_prazo": "Entregues no prazo",
+    })
     service_display = service_display[[
-        "Regional", "Pedidos", "Entregues_no_prazo", "Nível de serviço (%)", "Meta (%)", "Status"
+        "Regional", "Entregues elegíveis", "Entregues no prazo", "Nível de serviço (%)", "Meta (%)", "Status"
     ]]
 
     st.subheader("Nível de serviço por regional")
     if history_service.empty:
         st.info("Não há entregas com prazo SLA disponível nos filtros atuais.")
     else:
+        st.caption(
+            "Cálculo do nível de serviço: entregues no prazo ÷ entregues elegíveis. "
+            "O TOTAL usa os totais da base — não é uma média das regionais."
+        )
         table_with_status(service_display, column_config={
             "Nível de serviço (%)": st.column_config.NumberColumn(format="%.2f%%"),
             "Meta (%)": st.column_config.NumberColumn(format="%.2f%%"),
@@ -691,7 +712,21 @@ with historical:
         service_event = st.plotly_chart(service_chart, use_container_width=True, key="service_chart", on_select="rerun", selection_mode="points")
         service_region = chart_selected_regional(service_event)
         if service_region:
-            show_detail(f"Pedidos usados no nível de serviço — {service_region}", history_service[history_service["Regional"].eq(service_region)], "historico_servico")
+            service_detail = history_service[history_service["Regional"].eq(service_region)].copy()
+            service_detail = service_detail.sort_values(
+                ["No prazo", "Atraso entrega (dias)"], ascending=[True, False], na_position="last"
+            )
+            late_deliveries = int((~service_detail["No prazo"]).sum())
+            on_time_deliveries = int(service_detail["No prazo"].sum())
+            st.caption(
+                f"{late_deliveries} entrega(s) fora do prazo e "
+                f"{on_time_deliveries} entrega(s) no prazo. As entregas fora do prazo aparecem primeiro."
+            )
+            show_detail(
+                f"Pedidos usados no nível de serviço — {service_region}",
+                service_detail,
+                "historico_servico",
+            )
 
 with present:
     st.header("Presente")
@@ -739,7 +774,12 @@ with present:
     pending_delivery_event = st.plotly_chart(delivery_aging_chart, use_container_width=True, key="pending_delivery_chart", on_select="rerun", selection_mode="points")
     pending_delivery_region = chart_selected_regional(pending_delivery_event)
     if pending_delivery_region:
-        show_detail(f"Pedidos aguardando entrega — {pending_delivery_region}", pending_delivery[pending_delivery["Regional"].eq(pending_delivery_region)], "presente_aguardando_entrega")
+        show_detail(
+            f"Pedidos aguardando entrega — {pending_delivery_region}",
+            pending_delivery[pending_delivery["Regional"].eq(pending_delivery_region)],
+            "presente_aguardando_entrega",
+            include_current_delay=True,
+        )
 
 st.divider()
 show_detail("Base completa filtrada", filtered, "base_completa_filtrada")
