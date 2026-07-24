@@ -31,7 +31,7 @@ VENDEDORES_ESPECIAIS = {
 }
 ORIGENS_SVE660 = {
     "102": "102 - Venda B2B",
-    "205": "205 - Venda E-commerce",
+    "205": "205 - Venda E-comm",
     "122": "122 - Bonificação",
 }
 
@@ -166,7 +166,7 @@ def load_data(
         {
             "Data faturamento": parse_date(faturamento_raw.iloc[:, 0]),
             "Nota fiscal": clean_text(faturamento_raw.iloc[:, 1]),
-            "Código origem": clean_text(faturamento_raw.iloc[:, 3]).str.replace(r"\.0$", "", regex=True),
+            "Código origem": clean_text(faturamento_raw.iloc[:, 3]).str.replace(r"\.0+$", "", regex=True),
             "Código cliente NF": clean_text(faturamento_raw.iloc[:, 4]),
             "Cliente NF": clean_text(faturamento_raw.iloc[:, 5]),
             "Data prevista": parse_date(faturamento_raw.iloc[:, 11]),
@@ -228,6 +228,9 @@ def load_data(
     # deve reaparecer indevidamente como aguardando faturamento.
     pedidos_exclusivos_fora_escopo = pedidos_origem_fora_escopo - pedidos_origem_permitida
     df = df[~df["Pedido"].isin(pedidos_exclusivos_fora_escopo)].copy()
+    # A origem é determinada pela SVE660. Sem uma das três origens autorizadas,
+    # o pedido fica completamente fora do painel.
+    df = df[df["Origem"].notna()].copy()
     df = df.merge(client_dimension, how="left", on="Código cliente")
 
     if inside_sales_path:
@@ -266,7 +269,6 @@ def load_data(
     df.loc[is_special_team, "Grupo"] = "ESPECIAIS"
 
     df["Estado"] = df["Estado"].replace("", pd.NA).fillna("Não informado")
-    df["Origem"] = df["Origem"].replace("", pd.NA).fillna("Origem não identificada (aguardando faturamento)")
     df["NFs"] = df["NFs"].fillna(0).astype(int)
     df["Nota fiscal"] = df["Nota fiscal"].fillna("")
     df["Valor nota fiscal"] = df["Valor nota fiscal"].fillna(0.0)
@@ -505,7 +507,7 @@ vendor_options = sorted(vendor_scope["Vendedor"].dropna().unique().tolist())
 vendor_current = prepare_multiselect("vendedor_filter", vendor_options)
 status_options = sorted(base["Status logística"].dropna().unique().tolist())
 status_current = prepare_multiselect("status_filter", status_options)
-origem_options = sorted(base["Origem"].dropna().unique().tolist())
+origem_options = list(ORIGENS_SVE660.values())
 origem_current = prepare_multiselect("origem_filter", origem_options)
 
 filter_col1, filter_col2, filter_col3, filter_col4, filter_col5, filter_col6 = st.columns(6)
