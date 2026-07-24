@@ -161,6 +161,7 @@ def load_data(
         pedidos["Pedido"].str.endswith("00", na=False)
         & ~pedidos["Situação pedido"].isin(["CAN", "REP"])
     ].copy()
+    pedidos["Data pedido disponível"] = True
 
     faturamento_base = pd.DataFrame(
         {
@@ -201,7 +202,13 @@ def load_data(
         )[["Código cliente", "Cliente cadastro", "Regional cadastro", "Grupo cadastro"]]
     )
 
-    faturamento = faturamento_all[faturamento_all["Pedido"].ne("")].copy()
+    faturamento = faturamento_all[
+        faturamento_all["Pedido"].ne("") & faturamento_all["Pedido"].ne("00000000")
+    ].copy()
+    faturamento_ecomm = faturamento_all[
+        faturamento_all["Origem"].eq(ORIGENS_SVE660["205"])
+        & faturamento_all["Pedido"].eq("00000000")
+    ].copy()
     pedidos_origem_permitida = set(faturamento["Pedido"])
     faturamento_resumo = (
         faturamento.groupby("Pedido", as_index=False)
@@ -232,6 +239,42 @@ def load_data(
     # o pedido fica completamente fora do painel.
     df = df[df["Origem"].notna()].copy()
     df = df.merge(client_dimension, how="left", on="Código cliente")
+
+    # A origem 205 não traz um número de pedido utilizável na SVE660 (vem como
+    # 00000000). Para não perder essas milhares de NFs, cada nota é tratada como
+    # um registro próprio de E-commerce, sem fingir que existe pedido na SVE611.
+    ecomm_resumo = (
+        faturamento_ecomm.groupby("Nota fiscal", as_index=False)
+        .agg(
+            **{
+                "NFs": ("Nota fiscal", "nunique"),
+                "Data faturamento": ("Data faturamento", "min"),
+                "Data prevista": ("Data prevista", "max"),
+                "Data entrega": ("Data entrega", "max"),
+                "Data solicitada cliente": ("Data solicitada cliente", "max"),
+                "Valor nota fiscal": ("Valor nota fiscal", "sum"),
+                "Código cliente NF": ("Código cliente NF", "first"),
+                "Cliente NF": ("Cliente NF", "first"),
+                "Regional": ("Regional", "first"),
+                "Grupo": ("Grupo", "first"),
+                "Origem": ("Origem", "first"),
+            }
+        )
+    )
+    if not ecomm_resumo.empty:
+        ecomm_resumo["Pedido"] = "E-COM NF " + ecomm_resumo["Nota fiscal"].astype(str)
+        ecomm_resumo["Situação pedido"] = "Não informado"
+        ecomm_resumo["Código cliente"] = ecomm_resumo["Código cliente NF"]
+        ecomm_resumo["Cliente"] = ecomm_resumo["Cliente NF"]
+        ecomm_resumo["Vendedor"] = "Não informado"
+        ecomm_resumo["Vendedor interno"] = "Não informado"
+        # Sem pedido na SVE611, a emissão é usada apenas como referência de período.
+        ecomm_resumo["Data pedido"] = ecomm_resumo["Data faturamento"]
+        ecomm_resumo["Data pedido disponível"] = False
+        ecomm_resumo["Valor pedido"] = ecomm_resumo["Valor nota fiscal"]
+        for column in ["Cliente cadastro", "Regional cadastro", "Grupo cadastro"]:
+            ecomm_resumo[column] = pd.NA
+        df = pd.concat([df, ecomm_resumo.reindex(columns=df.columns)], ignore_index=True)
 
     if inside_sales_path:
         inside_sales = pd.read_excel(inside_sales_path, dtype=str)
@@ -634,7 +677,9 @@ with historical:
     st.header("Histórico")
     st.caption("Metas: faturamento em até 2 dias e nível de serviço de 96%.")
 
-    history_billing = filtered[filtered["Data faturamento"].notna()].copy()
+    history_billing = filtered[
+        filtered["Data faturamento"].notna() & filtered["Data pedido disponível"]
+    ].copy()
     billing_summary = (
         history_billing.groupby("Regional", as_index=False)
         .agg(
