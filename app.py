@@ -273,18 +273,20 @@ def to_excel(data: pd.DataFrame, sheet_name: str) -> bytes:
 
 
 def status_color(value: str) -> str:
-    if "Dentro" in value or "Atingida" in value:
+    value = str(value).casefold()
+    if "dentro" in value or "atingida" in value:
         return "background-color: #d1fae5; color: #065f46"
-    if "Atenção" in value:
+    if "limite" in value:
         return "background-color: #fef3c7; color: #92400e"
     return "background-color: #fee2e2; color: #991b1b"
 
 
-def table_with_status(data: pd.DataFrame) -> None:
+def table_with_status(data: pd.DataFrame, column_config: dict | None = None) -> None:
     st.dataframe(
         data.style.map(status_color, subset=["Status"]),
         hide_index=True,
         use_container_width=True,
+        column_config=column_config,
     )
 
 
@@ -461,12 +463,12 @@ metric1.metric("Pedidos", f"{orders:,}".replace(",", "."))
 metric2.metric("Faturados", f"{faturados:,}".replace(",", "."))
 metric3.metric("Entregues", f"{entregues:,}".replace(",", "."))
 metric4.metric("Nível de serviço", f"{no_prazo / entregues:.0%}" if entregues else "—")
-metric5.metric("Lead time total médio", f"{filtered['Lead time total (dias)'].mean():.1f} dias" if entregues else "—")
+metric5.metric("Lead time total médio", f"{filtered['Lead time total (dias)'].mean():.2f} dias" if entregues else "—")
 
 with st.expander("Referência de lead time por estado"):
     st.caption("Média do campo 'Lead time total' da tabela operacional, em dias úteis. Ela é usada quando não há data solicitada pelo cliente.")
     st.dataframe(state_lead, hide_index=True, use_container_width=True, column_config={
-        "Lead time médio por estado (dias úteis)": st.column_config.NumberColumn(format="%.1f")
+        "Lead time médio por estado (dias úteis)": st.column_config.NumberColumn(format="%.2f")
     })
 
 historical, present = st.tabs(["Histórico", "Presente"])
@@ -477,26 +479,33 @@ with historical:
 
     history_billing = filtered[filtered["Data faturamento"].notna()].copy()
     billing_summary = (
-        history_billing.groupby("Regional", as_index=False)["Pedido → faturamento (dias)"]
-        .agg(["mean", "count"])
-        .reset_index()
-        .rename(columns={"mean": "Média de faturamento (dias)", "count": "Pedidos faturados"})
+        history_billing.groupby("Regional", as_index=False)
+        .agg(
+            **{
+                "Média de faturamento (dias)": ("Pedido → faturamento (dias)", "mean"),
+                "Pedidos faturados": ("Pedido", "size"),
+            }
+        )
     )
     billing_summary["Meta (dias)"] = META_FATURAMENTO_DIAS
     billing_summary["Desvio (dias)"] = billing_summary["Média de faturamento (dias)"] - META_FATURAMENTO_DIAS
     billing_summary["Status"] = np.select(
         [billing_summary["Média de faturamento (dias)"] <= META_FATURAMENTO_DIAS,
          billing_summary["Média de faturamento (dias)"] <= META_FATURAMENTO_DIAS + 1],
-        ["🟢 Dentro da meta", "🟡 Atenção"],
-        default="🔴 Acima da meta",
+        ["🟢 Dentro do prazo", "🟡 Próximo ao limite"],
+        default="🔴 Prazo acima do esperado",
     )
     billing_summary = billing_summary.sort_values("Média de faturamento (dias)", ascending=False)
 
     st.subheader("Tempo médio de faturamento por regional")
-    table_with_status(billing_summary)
+    table_with_status(billing_summary, column_config={
+        "Média de faturamento (dias)": st.column_config.NumberColumn(format="%.2f"),
+        "Meta (dias)": st.column_config.NumberColumn(format="%.2f"),
+        "Desvio (dias)": st.column_config.NumberColumn(format="%.2f"),
+    })
     billing_chart = px.bar(
         billing_summary, x="Regional", y="Média de faturamento (dias)", color="Status",
-        color_discrete_map={"🟢 Dentro da meta": "#16a34a", "🟡 Atenção": "#f59e0b", "🔴 Acima da meta": "#dc2626"},
+        color_discrete_map={"🟢 Dentro do prazo": "#16a34a", "🟡 Próximo ao limite": "#f59e0b", "🔴 Prazo acima do esperado": "#dc2626"},
         hover_data=["Pedidos faturados", "Meta (dias)"], title="Clique em uma barra para ver os pedidos",
     )
     billing_chart.add_hline(y=META_FATURAMENTO_DIAS, line_dash="dash", line_color="#dc2626", annotation_text="Meta: 2 dias")
@@ -515,18 +524,25 @@ with historical:
     service_summary["Meta"] = META_NIVEL_SERVICO
     service_summary["Status"] = np.where(
         service_summary["Nível de serviço"] >= META_NIVEL_SERVICO,
-        "🟢 Meta atingida", "🔴 Abaixo da meta",
+        "🟢 Meta de serviço atingida", "🔴 Meta de serviço não atingida",
     )
     service_summary = service_summary.sort_values("Nível de serviço")
+    service_display = service_summary.copy()
+    service_display["Nível de serviço (%)"] = service_display["Nível de serviço"] * 100
+    service_display["Meta (%)"] = service_display["Meta"] * 100
+    service_display = service_display.drop(columns=["Nível de serviço", "Meta"])
 
     st.subheader("Nível de serviço por regional")
     if service_summary.empty:
         st.info("Não há entregas com prazo SLA disponível nos filtros atuais.")
     else:
-        table_with_status(service_summary)
+        table_with_status(service_display, column_config={
+            "Nível de serviço (%)": st.column_config.NumberColumn(format="%.2f%%"),
+            "Meta (%)": st.column_config.NumberColumn(format="%.2f%%"),
+        })
         service_chart = px.bar(
             service_summary, x="Regional", y="Nível de serviço", color="Status",
-            color_discrete_map={"🟢 Meta atingida": "#16a34a", "🔴 Abaixo da meta": "#dc2626"},
+            color_discrete_map={"🟢 Meta de serviço atingida": "#16a34a", "🔴 Meta de serviço não atingida": "#dc2626"},
             hover_data=["Pedidos", "Entregues_no_prazo"], title="Clique em uma barra para ver os pedidos",
         )
         service_chart.update_yaxes(tickformat=".0%", range=[0, 1])
