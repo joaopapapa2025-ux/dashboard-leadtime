@@ -1,6 +1,7 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -23,6 +24,16 @@ VENDEDORES_ESPECIAIS = {
     "BERNARDO OLIVEIRA DALLEGRAVE",
     "JOAO VITOR TADRA",
 }
+
+
+def format_last_update(path: Path) -> str:
+    """Mostra a data/hora da última versão enviada da SVE660."""
+    try:
+        brazil_tz = ZoneInfo("America/Sao_Paulo")
+    except Exception:
+        brazil_tz = timezone(timedelta(hours=-3))
+    updated_at = datetime.fromtimestamp(path.stat().st_mtime, tz=brazil_tz)
+    return updated_at.strftime("%d/%m/%Y às %H:%M")
 
 
 def clean_text(series: pd.Series) -> pd.Series:
@@ -385,7 +396,9 @@ faturamento_file = find_source_file("SVE660", required=True)
 inside_sales_file = find_source_file("Base Dashboard Inside Sales")
 state_lead_file = find_source_file("Tabela lead time operacao e comercial")
 
-st.title("⏱️ Lead Time da Operação")
+st.title("Lead Time da Operação")
+if faturamento_file:
+    st.caption(f"🕒 Última atualização: {format_last_update(faturamento_file)}")
 
 if not pedidos_file or not faturamento_file:
     st.error("Envie as bases SVE611 e SVE660 na mesma pasta do arquivo app.py.")
@@ -532,8 +545,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 historical, present = st.tabs([
-    "📊 Histórico — resultados concluídos",
-    "⚡ Presente — pedidos em andamento",
+    "Histórico — resultados concluídos",
+    "Presente — pedidos em andamento",
 ])
 
 with historical:
