@@ -488,30 +488,36 @@ st.markdown(
     """
     <style>
     div[data-testid="stTabs"] [data-baseweb="tab-list"] {
-        gap: 8px;
-        background: #f8fafc;
-        border: 1px solid #e5e7eb;
-        border-radius: 10px;
-        padding: 6px;
+        display: grid !important;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+        gap: 16px;
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        padding: 0;
         margin-top: 6px;
-        margin-bottom: 18px;
+        margin-bottom: 24px;
     }
     div[data-testid="stTabs"] [data-baseweb="tab"] {
-        height: 46px;
-        min-width: 170px;
+        width: 100%;
+        height: 78px;
+        min-width: 0;
         justify-content: center;
-        padding: 0 24px;
-        border-radius: 7px;
-        background: transparent;
-        color: #64748b;
-        font-size: 16px;
-        font-weight: 600;
+        padding: 0 28px;
+        border: 1px solid #dfe5ea;
+        border-radius: 12px;
+        background: #ffffff;
+        color: #475569;
+        font-size: 18px;
+        font-weight: 700;
+        transition: all .15s ease;
     }
     div[data-testid="stTabs"] [aria-selected="true"] {
-        background: #fff7f3;
+        background: #fff4ef;
         color: #9a4f38;
-        border: 1px solid #f1d4c8;
-        box-shadow: 0 1px 3px rgba(84, 55, 43, .08);
+        border: 2px solid #e7a88f;
+        box-shadow: 0 4px 12px rgba(154, 79, 56, .12);
     }
     div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
         display: none;
@@ -520,7 +526,10 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-historical, present = st.tabs(["Histórico", "Presente"])
+historical, present = st.tabs([
+    "📊 Histórico — resultados concluídos",
+    "⚡ Presente — pedidos em andamento",
+])
 
 with historical:
     st.header("Histórico")
