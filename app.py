@@ -265,6 +265,15 @@ def load_data(
     use_carrier_forecast = df["Prazo SLA"].isna() & df["Data prevista"].notna()
     df.loc[use_carrier_forecast, "Prazo SLA"] = df.loc[use_carrier_forecast, "Data prevista"]
     df.loc[use_carrier_forecast, "Fonte prazo SLA"] = "Data prevista da transportadora"
+
+    # Para ESPECIAIS, a referência mais coerente de prazo é a previsão construída
+    # com o lead time real do estado, inclusive quando houver data solicitada pelo cliente.
+    especiais_com_previsao = (
+        df["Regional"].str.contains("ESPECIAIS", case=False, na=False)
+        & df["Previsão por estado"].notna()
+    )
+    df.loc[especiais_com_previsao, "Prazo SLA"] = df.loc[especiais_com_previsao, "Previsão por estado"]
+    df.loc[especiais_com_previsao, "Fonte prazo SLA"] = "Previsão por estado (ESPECIAIS)"
     df["Fonte prazo SLA"] = df["Fonte prazo SLA"].replace("", "Sem prazo disponível")
 
     df["Pedido → faturamento (dias)"] = (df["Data faturamento"] - df["Data pedido"]).dt.days
@@ -789,7 +798,8 @@ with present:
     st.subheader("Pedidos faturados aguardando entrega")
     st.caption(
         "Prazo usado nesta tabela: data solicitada pelo cliente; se ela não existir, "
-        "previsão calculada pela média de lead time do estado; por último, data prevista da transportadora."
+        "previsão calculada pela média de lead time do estado; por último, data prevista da transportadora. "
+        "Para ESPECIAIS, a previsão por estado é sempre priorizada quando disponível."
     )
     st.dataframe(delivery_aging.style.apply(total_row_style, axis=1), hide_index=True, use_container_width=True)
     delivery_aging_long = delivery_aging[delivery_aging["Regional"].ne("TOTAL")].melt(id_vars="Regional", var_name="Faixa", value_name="Pedidos")
