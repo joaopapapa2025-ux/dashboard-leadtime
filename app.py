@@ -1,6 +1,9 @@
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
+import json
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -15,6 +18,8 @@ BASE_DIR = Path(__file__).resolve().parent
 ALL = "Todos"
 META_FATURAMENTO_DIAS = 2
 META_NIVEL_SERVICO = 0.96
+GITHUB_REPOSITORY = "joaopapapa2025-ux/dashboard-leadtime"
+GITHUB_BRANCH = "main"
 VENDEDORES_ESPECIAIS = {
     "PEDRO HENRIQUE KRUGER BORN",
     "RODRIGO DOS REIS E SARLO",
@@ -26,13 +31,31 @@ VENDEDORES_ESPECIAIS = {
 }
 
 
-def format_last_update(path: Path) -> str:
-    """Mostra a data/hora da última versão enviada da SVE660."""
+@st.cache_data(ttl=300, show_spinner=False)
+def github_file_last_update(filename: str) -> datetime | None:
+    """Busca o último commit que alterou especificamente o arquivo informado."""
+    query = urlencode({"path": filename, "sha": GITHUB_BRANCH, "per_page": 1})
+    url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/commits?{query}"
+    request = Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "papapa-leadtime-dashboard"})
+    try:
+        with urlopen(request, timeout=8) as response:
+            commits = json.load(response)
+        if not commits:
+            return None
+        timestamp = commits[0]["commit"]["committer"]["date"]
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def format_last_update(updated_at: datetime | None) -> str | None:
+    if not updated_at:
+        return None
     try:
         brazil_tz = ZoneInfo("America/Sao_Paulo")
     except Exception:
         brazil_tz = timezone(timedelta(hours=-3))
-    updated_at = datetime.fromtimestamp(path.stat().st_mtime, tz=brazil_tz)
+    updated_at = updated_at.astimezone(brazil_tz)
     return updated_at.strftime("%d/%m/%Y às %H:%M")
 
 
@@ -398,7 +421,11 @@ state_lead_file = find_source_file("Tabela lead time operacao e comercial")
 
 st.title("Lead Time da Operação")
 if faturamento_file:
-    st.caption(f"🕒 Última atualização: {format_last_update(faturamento_file)}")
+    last_update = format_last_update(github_file_last_update(faturamento_file.name))
+    if last_update:
+        st.caption(f"🕒 Última atualização da SVE660: {last_update}")
+    else:
+        st.caption("🕒 Última atualização da SVE660: não identificada no GitHub")
 
 if not pedidos_file or not faturamento_file:
     st.error("Envie as bases SVE611 e SVE660 na mesma pasta do arquivo app.py.")
@@ -545,8 +572,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 historical, present = st.tabs([
-    "Histórico — resultados concluídos",
-    "Presente — pedidos em andamento",
+    "Histórico - resultados concluídos",
+    "Presente - pedidos em andamento",
 ])
 
 with historical:
