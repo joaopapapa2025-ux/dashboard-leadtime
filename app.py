@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 import json
 from pathlib import Path
+import unicodedata
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -68,6 +69,15 @@ def clean_text(series: pd.Series) -> pd.Series:
     return series.fillna("").astype(str).str.strip()
 
 
+def normalize_location(series: pd.Series) -> pd.Series:
+    """Normaliza UF e cidade para permitir comparação sem diferença de acentuação."""
+    return (
+        clean_text(series)
+        .map(lambda value: unicodedata.normalize("NFKD", value).encode("ASCII", "ignore").decode("ASCII"))
+        .str.upper()
+    )
+
+
 def parse_date(series: pd.Series) -> pd.Series:
     value = clean_text(series).replace({"00000000": "", "nan": ""})
     return pd.to_datetime(value, format="%d%m%Y", errors="coerce")
@@ -115,24 +125,38 @@ def find_source_file(prefix: str, required: bool = False) -> Path | None:
     return None
 
 
-@st.cache_data(show_spinner="Calculando a referência de prazo por estado...")
-def load_state_lead_time(path: str | None) -> pd.DataFrame:
+@st.cache_data(show_spinner="Calculando as referências de prazo por cidade e estado...")
+def load_lead_time_references(path: str | None) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not path:
-        return pd.DataFrame(columns=["Estado", "Lead time médio por estado (dias úteis)"])
+        return (
+            pd.DataFrame(columns=["Estado chave", "Lead time médio por estado (dias úteis)"]),
+            pd.DataFrame(columns=["Cidade chave", "Estado chave", "Lead time médio por cidade (dias úteis)"]),
+        )
 
     raw = pd.read_excel(path, sheet_name="tabela de lead time", header=None)
     lead = pd.DataFrame(
         {
-            "Estado": clean_text(raw.iloc[3:, 2]),
+            "Cidade chave": normalize_location(raw.iloc[3:, 1]),
+            "Estado chave": normalize_location(raw.iloc[3:, 2]),
             "Lead time": pd.to_numeric(raw.iloc[3:, 3], errors="coerce"),
         }
     )
-    lead = lead[(lead["Estado"].ne("")) & lead["Lead time"].notna()].copy()
-    return (
-        lead.groupby("Estado", as_index=False)["Lead time"]
+    lead = lead[
+        lead["Cidade chave"].ne("")
+        & lead["Estado chave"].ne("")
+        & lead["Lead time"].notna()
+    ].copy()
+    city_lead = (
+        lead.groupby(["Cidade chave", "Estado chave"], as_index=False)["Lead time"]
+        .mean()
+        .rename(columns={"Lead time": "Lead time médio por cidade (dias úteis)"})
+    )
+    state_lead = (
+        lead.groupby("Estado chave", as_index=False)["Lead time"]
         .mean()
         .rename(columns={"Lead time": "Lead time médio por estado (dias úteis)"})
     )
+    return state_lead, city_lead
 
 
 @st.cache_data(show_spinner="Lendo e conciliando as bases...")
@@ -238,11 +262,13 @@ def load_data(
             {
                 "Código cliente": clean_text(inside_sales["CÓDIGO"]),
                 "Estado": clean_text(inside_sales["UF"]),
+                "Cidade": clean_text(inside_sales["CIDADE"]),
             }
         ).drop_duplicates("Código cliente")
         df = df.merge(states, how="left", on="Código cliente")
     else:
         df["Estado"] = pd.NA
+        df["Cidade"] = pd.NA
 
     has_nf_client = df["Cliente NF"].notna() & df["Cliente NF"].ne("")
     has_history_client = df["Cliente cadastro"].notna() & df["Cliente cadastro"].ne("")
@@ -272,10 +298,16 @@ def load_data(
     df["Nota fiscal"] = df["Nota fiscal"].fillna("")
     df["Valor nota fiscal"] = df["Valor nota fiscal"].fillna(0.0)
 
-    state_lead = load_state_lead_time(state_lead_path)
-    df = df.merge(state_lead, how="left", left_on="Estado", right_on="Estado")
+    state_lead, city_lead = load_lead_time_references(state_lead_path)
+    df["Estado chave"] = normalize_location(df["Estado"])
+    df["Cidade chave"] = normalize_location(df["Cidade"])
+    df = df.merge(state_lead, how="left", on="Estado chave")
+    df = df.merge(city_lead, how="left", on=["Cidade chave", "Estado chave"])
     df["Previsão por estado"] = add_business_days(
         df["Data faturamento"], df["Lead time médio por estado (dias úteis)"]
+    )
+    df["Previsão por cidade"] = add_business_days(
+        df["Data faturamento"], df["Lead time médio por cidade (dias úteis)"]
     )
 
     df["Prazo SLA"] = df["Data solicitada cliente"]
@@ -289,12 +321,19 @@ def load_data(
 
     # Para ESPECIAIS, a referência mais coerente de prazo é a previsão construída
     # com o lead time real do estado, inclusive quando houver data solicitada pelo cliente.
-    especiais_com_previsao = (
+    especiais_com_previsao_cidade = (
         df["Regional"].str.contains("ESPECIAIS", case=False, na=False)
+        & df["Previsão por cidade"].notna()
+    )
+    df.loc[especiais_com_previsao_cidade, "Prazo SLA"] = df.loc[especiais_com_previsao_cidade, "Previsão por cidade"]
+    df.loc[especiais_com_previsao_cidade, "Fonte prazo SLA"] = "Previsão por cidade (ESPECIAIS)"
+    especiais_com_previsao_estado = (
+        df["Regional"].str.contains("ESPECIAIS", case=False, na=False)
+        & ~especiais_com_previsao_cidade
         & df["Previsão por estado"].notna()
     )
-    df.loc[especiais_com_previsao, "Prazo SLA"] = df.loc[especiais_com_previsao, "Previsão por estado"]
-    df.loc[especiais_com_previsao, "Fonte prazo SLA"] = "Previsão por estado (ESPECIAIS)"
+    df.loc[especiais_com_previsao_estado, "Prazo SLA"] = df.loc[especiais_com_previsao_estado, "Previsão por estado"]
+    df.loc[especiais_com_previsao_estado, "Fonte prazo SLA"] = "Média de lead time por estado (ESPECIAIS)"
     df["Fonte prazo SLA"] = df["Fonte prazo SLA"].replace("", "Sem prazo disponível")
 
     df["Pedido → faturamento (dias)"] = (df["Data faturamento"] - df["Data pedido"]).dt.days
@@ -404,9 +443,9 @@ def show_detail(
         return
     st.markdown(f"#### {title}")
     detail_cols = [
-        "Pedido", "Nota fiscal", "Cliente", "Código cliente", "Origem", "Vendedor", "Regional", "Grupo", "Estado",
+        "Pedido", "Nota fiscal", "Cliente", "Código cliente", "Origem", "Vendedor", "Regional", "Grupo", "Estado", "Cidade",
         "Valor pedido", "Valor nota fiscal", "Data pedido", "Data faturamento", "Data solicitada cliente",
-        "Previsão por estado", "Data prevista", "Prazo SLA", "Data entrega",
+        "Previsão por cidade", "Previsão por estado", "Data prevista", "Prazo SLA", "Data entrega",
         "Pedido → faturamento (dias)", "Atraso entrega (dias)", "Situação SLA", "Status logística",
     ]
     # Atraso atual é uma leitura de hoje e, portanto, só faz sentido para pedidos em aberto.
@@ -425,6 +464,7 @@ def show_detail(
             "Data pedido": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "Data faturamento": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "Data solicitada cliente": st.column_config.DateColumn(format="DD/MM/YYYY"),
+            "Previsão por cidade": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "Previsão por estado": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "Data prevista": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "Prazo SLA": st.column_config.DateColumn(format="DD/MM/YYYY"),
@@ -491,7 +531,7 @@ except Exception as error:
     st.stop()
 
 if not state_lead_file:
-    st.warning("A base 'Tabela lead time operacao e comercial.xlsx' não foi encontrada. A previsão por estado não será calculada.")
+    st.warning("A base 'Tabela lead time operacao e comercial.xlsx' não foi encontrada. As previsões por cidade e estado não serão calculadas.")
 
 st.subheader("Filtros")
 min_date = base["Data pedido"].min().date()
@@ -570,8 +610,8 @@ if filtered.empty:
     st.stop()
 
 with st.expander("Referência de lead time por estado"):
-    st.caption("Média do campo 'Lead time total' da tabela operacional, em dias úteis. Ela é usada quando não há data solicitada pelo cliente.")
-    st.dataframe(state_lead, hide_index=True, use_container_width=True, column_config={
+    st.caption("Média do campo 'Lead time total' da tabela operacional, em dias úteis. Para ESPECIAIS, o painel usa primeiro a cidade e só depois a média do estado.")
+    st.dataframe(state_lead.rename(columns={"Estado chave": "Estado"}), hide_index=True, use_container_width=True, column_config={
         "Lead time médio por estado (dias úteis)": st.column_config.NumberColumn(format="%.2f")
     })
 
@@ -825,7 +865,7 @@ with present:
     st.caption(
         "Prazo usado nesta tabela: data solicitada pelo cliente; se ela não existir, "
         "previsão calculada pela média de lead time do estado; por último, data prevista da transportadora. "
-        "Para ESPECIAIS, a previsão por estado é sempre priorizada quando disponível."
+        "Para ESPECIAIS, a previsão por cidade é priorizada; sem cidade na referência, é usada a média do estado."
     )
     st.dataframe(delivery_aging.style.apply(total_row_style, axis=1), hide_index=True, use_container_width=True)
     delivery_aging_long = delivery_aging[delivery_aging["Regional"].ne("TOTAL")].melt(id_vars="Regional", var_name="Faixa", value_name="Pedidos")
