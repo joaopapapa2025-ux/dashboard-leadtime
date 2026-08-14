@@ -726,6 +726,10 @@ with historical:
     # Filtro exclusivo do Histórico: considera a data de entrega efetiva, e não
     # a data de emissão/faturamento. Assim, apenas pedidos concluídos entram nele.
     historical_completed = filtered[filtered["Data entrega"].notna()].copy()
+    # Registro isolado e fora da janela histórica analisada.
+    historical_completed = historical_completed[
+        historical_completed["Data entrega"].dt.to_period("M").ne(pd.Period("2024-07", freq="M"))
+    ].copy()
     historical_completed["Mês de entrega"] = historical_completed["Data entrega"].dt.strftime("%m/%Y")
     delivery_month_options = sorted(
         historical_completed["Mês de entrega"].dropna().unique().tolist(),
