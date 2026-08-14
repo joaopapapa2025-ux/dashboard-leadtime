@@ -723,7 +723,27 @@ with historical:
     st.header("Histórico")
     st.caption("Metas: faturamento em até 2 dias e nível de serviço de 96%.")
 
-    history_billing = filtered[filtered["Data faturamento"].notna()].copy()
+    # Filtro exclusivo do Histórico: considera a data de entrega efetiva, e não
+    # a data de emissão/faturamento. Assim, apenas pedidos concluídos entram nele.
+    historical_completed = filtered[filtered["Data entrega"].notna()].copy()
+    historical_completed["Mês de entrega"] = historical_completed["Data entrega"].dt.strftime("%m/%Y")
+    delivery_month_options = sorted(
+        historical_completed["Mês de entrega"].dropna().unique().tolist(),
+        key=lambda value: pd.to_datetime(value, format="%m/%Y"),
+        reverse=True,
+    )
+    delivery_month_filter = st.selectbox(
+        "Mês de entrega do pedido",
+        [ALL, *delivery_month_options],
+        key="delivery_month_history_filter",
+        help="Filtra somente os resultados concluídos pela data de entrega efetiva.",
+    )
+    if delivery_month_filter != ALL:
+        historical_completed = historical_completed[
+            historical_completed["Mês de entrega"].eq(delivery_month_filter)
+        ].copy()
+
+    history_billing = historical_completed[historical_completed["Data faturamento"].notna()].copy()
     billing_summary = (
         history_billing.groupby("Regional", as_index=False)
         .agg(
@@ -775,7 +795,7 @@ with historical:
     if billing_region:
         show_detail(f"Pedidos usados no tempo de faturamento — {billing_region}", history_billing[history_billing["Regional"].eq(billing_region)], "historico_faturamento")
 
-    history_service = filtered[filtered["Data entrega"].notna() & filtered["Prazo SLA"].notna()].copy()
+    history_service = historical_completed[historical_completed["Prazo SLA"].notna()].copy()
     history_service["No prazo"] = history_service["Data entrega"] <= history_service["Prazo SLA"]
     history_service["Situação SLA"] = np.where(
         history_service["No prazo"], "Entregue no prazo", "Entregue fora do prazo"
