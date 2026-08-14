@@ -163,7 +163,7 @@ def load_lead_time_references(path: str | None) -> tuple[pd.DataFrame, pd.DataFr
 def load_data(
     pedidos_path: str,
     faturamento_path: str,
-    inside_sales_path: str | None,
+    clientes_path: str | None,
     state_lead_path: str | None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     pedidos_raw = pd.read_excel(pedidos_path, dtype=str)
@@ -256,19 +256,34 @@ def load_data(
     # Eles não recebem rótulo de origem porque ainda não possuem registro na SVE660.
     df = df.merge(client_dimension, how="left", on="Código cliente")
 
-    if inside_sales_path:
-        inside_sales = pd.read_excel(inside_sales_path, dtype=str)
-        states = pd.DataFrame(
-            {
-                "Código cliente": clean_text(inside_sales["CÓDIGO"]),
-                "Estado": clean_text(inside_sales["UF"]),
-                "Cidade": clean_text(inside_sales["CIDADE"]),
-            }
-        ).drop_duplicates("Código cliente")
-        df = df.merge(states, how="left", on="Código cliente")
+    if clientes_path:
+        clientes = pd.read_excel(clientes_path, dtype=str)
+        if Path(clientes_path).name.upper().startswith("SUG060"):
+            # SUG060 é a referência corporativa: cobre clientes de todos os canais.
+            localizacao_clientes = pd.DataFrame(
+                {
+                    "Código cliente": clean_text(clientes["Código"]),
+                    "Estado": clean_text(clientes["Uf"]),
+                    "Cidade": clean_text(clientes["Cidade"]),
+                    "Bairro": clean_text(clientes["Bairro"]),
+                }
+            )
+        else:
+            # Compatibilidade temporária com a antiga base exclusiva de Inside Sales.
+            localizacao_clientes = pd.DataFrame(
+                {
+                    "Código cliente": clean_text(clientes["CÓDIGO"]),
+                    "Estado": clean_text(clientes["UF"]),
+                    "Cidade": clean_text(clientes["CIDADE"]),
+                    "Bairro": pd.NA,
+                }
+            )
+        localizacao_clientes = localizacao_clientes.drop_duplicates("Código cliente", keep="last")
+        df = df.merge(localizacao_clientes, how="left", on="Código cliente")
     else:
         df["Estado"] = pd.NA
         df["Cidade"] = pd.NA
+        df["Bairro"] = pd.NA
 
     has_nf_client = df["Cliente NF"].notna() & df["Cliente NF"].ne("")
     has_history_client = df["Cliente cadastro"].notna() & df["Cliente cadastro"].ne("")
@@ -294,6 +309,8 @@ def load_data(
     df.loc[is_special_team, "Grupo"] = "ESPECIAIS"
 
     df["Estado"] = df["Estado"].replace("", pd.NA).fillna("Não informado")
+    df["Cidade"] = df["Cidade"].replace("", pd.NA).fillna("Não informado")
+    df["Bairro"] = df["Bairro"].replace("", pd.NA).fillna("Não informado")
     df["NFs"] = df["NFs"].fillna(0).astype(int)
     df["Nota fiscal"] = df["Nota fiscal"].fillna("")
     df["Valor nota fiscal"] = df["Valor nota fiscal"].fillna(0.0)
@@ -443,7 +460,7 @@ def show_detail(
         return
     st.markdown(f"#### {title}")
     detail_cols = [
-        "Pedido", "Nota fiscal", "Cliente", "Código cliente", "Origem", "Vendedor", "Regional", "Grupo", "Estado", "Cidade",
+        "Pedido", "Nota fiscal", "Cliente", "Código cliente", "Origem", "Vendedor", "Regional", "Grupo", "Estado", "Cidade", "Bairro",
         "Valor pedido", "Valor nota fiscal", "Data pedido", "Data faturamento", "Data solicitada cliente",
         "Previsão por cidade", "Previsão por estado", "Data prevista", "Prazo SLA", "Data entrega",
         "Pedido → faturamento (dias)", "Atraso entrega (dias)", "Situação SLA", "Status logística",
@@ -504,7 +521,7 @@ def delivery_age_bucket(days: float) -> str:
 
 pedidos_file = find_source_file("SVE611", required=True)
 faturamento_file = find_source_file("SVE660", required=True)
-inside_sales_file = find_source_file("Base Dashboard Inside Sales")
+clientes_file = find_source_file("SUG060") or find_source_file("Base Dashboard Inside Sales")
 state_lead_file = find_source_file("Tabela lead time operacao e comercial")
 
 st.title("Lead Time da Operação")
@@ -523,7 +540,7 @@ try:
     base, state_lead = load_data(
         str(pedidos_file),
         str(faturamento_file),
-        str(inside_sales_file) if inside_sales_file else None,
+        str(clientes_file) if clientes_file else None,
         str(state_lead_file) if state_lead_file else None,
     )
 except Exception as error:
