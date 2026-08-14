@@ -736,16 +736,47 @@ with historical:
         key=lambda value: pd.to_datetime(value, format="%m/%Y"),
         reverse=True,
     )
-    delivery_month_filter = st.selectbox(
-        "Mês de entrega do pedido",
-        [ALL, *delivery_month_options],
-        key="delivery_month_history_filter",
-        help="Filtra somente os resultados concluídos pela data de entrega efetiva.",
+    delivery_filter_type = st.radio(
+        "Filtrar resultados concluídos por entrega",
+        ["Todos", "Mês de entrega", "Dia específico", "Período de entrega"],
+        horizontal=True,
+        key="delivery_history_filter_type",
     )
-    if delivery_month_filter != ALL:
+    if delivery_filter_type == "Mês de entrega":
+        delivery_month_filter = st.selectbox(
+            "Mês de entrega do pedido",
+            delivery_month_options,
+            key="delivery_month_history_filter",
+        )
         historical_completed = historical_completed[
             historical_completed["Mês de entrega"].eq(delivery_month_filter)
         ].copy()
+    elif delivery_filter_type == "Dia específico":
+        selected_delivery_date = st.date_input(
+            "Data de entrega do pedido",
+            value=historical_completed["Data entrega"].max().date(),
+            min_value=historical_completed["Data entrega"].min().date(),
+            max_value=historical_completed["Data entrega"].max().date(),
+            key="delivery_day_history_filter",
+        )
+        historical_completed = historical_completed[
+            historical_completed["Data entrega"].dt.date.eq(selected_delivery_date)
+        ].copy()
+    elif delivery_filter_type == "Período de entrega":
+        delivery_start = historical_completed["Data entrega"].min().date()
+        delivery_end = historical_completed["Data entrega"].max().date()
+        selected_delivery_period = st.date_input(
+            "Período de entrega do pedido",
+            value=(delivery_start, delivery_end),
+            min_value=delivery_start,
+            max_value=delivery_end,
+            key="delivery_period_history_filter",
+        )
+        if isinstance(selected_delivery_period, tuple) and len(selected_delivery_period) == 2:
+            period_start, period_end = map(pd.Timestamp, selected_delivery_period)
+            historical_completed = historical_completed[
+                historical_completed["Data entrega"].between(period_start, period_end)
+            ].copy()
 
     history_billing = historical_completed[historical_completed["Data faturamento"].notna()].copy()
     billing_summary = (
