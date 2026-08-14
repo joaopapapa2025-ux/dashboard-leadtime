@@ -132,6 +132,14 @@ def find_source_file(
     return None
 
 
+def file_signature(path: Path | None) -> tuple[str, int, int] | None:
+    """Identifica a versão do arquivo para invalidar o cache quando ele for substituído."""
+    if not path or not path.exists():
+        return None
+    stat = path.stat()
+    return (path.name, stat.st_size, stat.st_mtime_ns)
+
+
 def read_client_location_file(path: str) -> pd.DataFrame:
     """Lê a dimensão de clientes em XLSX ou CSV leve, sem exigir upload diário."""
     if Path(path).suffix.lower() == ".csv":
@@ -179,7 +187,14 @@ def load_data(
     faturamento_path: str,
     clientes_path: str | None,
     state_lead_path: str | None,
+    pedidos_signature: tuple[str, int, int] | None = None,
+    faturamento_signature: tuple[str, int, int] | None = None,
+    clientes_signature: tuple[str, int, int] | None = None,
+    state_lead_signature: tuple[str, int, int] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    # As assinaturas integram a chave do st.cache_data. Elas existem apenas para
+    # garantir que um arquivo atualizado no GitHub nunca reutilize dados antigos.
+    _ = (pedidos_signature, faturamento_signature, clientes_signature, state_lead_signature)
     pedidos_raw = pd.read_excel(pedidos_path, dtype=str)
     faturamento_raw = pd.read_excel(faturamento_path, dtype=str)
 
@@ -556,6 +571,10 @@ try:
         str(faturamento_file),
         str(clientes_file) if clientes_file else None,
         str(state_lead_file) if state_lead_file else None,
+        file_signature(pedidos_file),
+        file_signature(faturamento_file),
+        file_signature(clientes_file),
+        file_signature(state_lead_file),
     )
 except Exception as error:
     st.exception(error)
