@@ -110,10 +110,17 @@ def add_business_days(start: pd.Series, days: pd.Series) -> pd.Series:
     return result
 
 
-def find_source_file(prefix: str, required: bool = False) -> Path | None:
+def find_source_file(
+    prefix: str,
+    required: bool = False,
+    extensions: tuple[str, ...] = (".xlsx",),
+) -> Path | None:
     files = sorted(
-        file for file in BASE_DIR.glob("*.xlsx")
-        if file.name.upper().startswith(prefix.upper()) and not file.name.startswith("~$")
+        file for file in BASE_DIR.glob("*")
+        if file.is_file()
+        and file.suffix.lower() in extensions
+        and file.name.upper().startswith(prefix.upper())
+        and not file.name.startswith("~$")
     )
     if len(files) > 1:
         st.error(f"Há mais de um arquivo começando com `{prefix}` na raiz do projeto.")
@@ -123,6 +130,13 @@ def find_source_file(prefix: str, required: bool = False) -> Path | None:
     if required:
         return None
     return None
+
+
+def read_client_location_file(path: str) -> pd.DataFrame:
+    """Lê a dimensão de clientes em XLSX ou CSV leve, sem exigir upload diário."""
+    if Path(path).suffix.lower() == ".csv":
+        return pd.read_csv(path, dtype=str, sep=None, engine="python", encoding="utf-8-sig")
+    return pd.read_excel(path, dtype=str)
 
 
 @st.cache_data(show_spinner="Calculando as referências de prazo por cidade e estado...")
@@ -257,7 +271,7 @@ def load_data(
     df = df.merge(client_dimension, how="left", on="Código cliente")
 
     if clientes_path:
-        clientes = pd.read_excel(clientes_path, dtype=str)
+        clientes = read_client_location_file(clientes_path)
         if Path(clientes_path).name.upper().startswith("SUG060"):
             # SUG060 é a referência corporativa: cobre clientes de todos os canais.
             localizacao_clientes = pd.DataFrame(
@@ -521,7 +535,7 @@ def delivery_age_bucket(days: float) -> str:
 
 pedidos_file = find_source_file("SVE611", required=True)
 faturamento_file = find_source_file("SVE660", required=True)
-clientes_file = find_source_file("SUG060") or find_source_file("Base Dashboard Inside Sales")
+clientes_file = find_source_file("SUG060", extensions=(".xlsx", ".csv")) or find_source_file("Base Dashboard Inside Sales")
 state_lead_file = find_source_file("Tabela lead time operacao e comercial")
 
 st.title("Lead Time da Operação")
