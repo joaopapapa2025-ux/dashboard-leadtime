@@ -554,12 +554,22 @@ def delivery_age_bucket(days: float) -> str:
     return "Atrasado há mais de 10 dias"
 
 
-def dashboard_password() -> str:
-    """Lê a senha cadastrada nos Secrets do Streamlit; retorna vazio se ela não existir."""
+def dashboard_password() -> tuple[str, str]:
+    """Lê a senha dos Secrets do Streamlit. Sem senha, devolve também o motivo para exibir na tela."""
     try:
-        return str(st.secrets[SECRET_SENHA])
-    except Exception:
-        return ""
+        password = st.secrets.get(SECRET_SENHA)
+    except Exception as error:
+        # O Streamlit usa o mesmo erro para "nenhum Secret" e "Secret mal formatado";
+        # só o segundo traz o erro de leitura do arquivo como causa.
+        if error.__cause__ is not None:
+            return "", "Os Secrets têm um erro de formatação. Confira se a senha está entre aspas retas (\")."
+        return "", "Nenhum Secret foi cadastrado para este app."
+    if isinstance(password, (str, int, float)) and str(password):
+        return str(password), ""
+    return "", (
+        f"Os Secrets deste app não têm a chave `{SECRET_SENHA}`. Confira se o nome está exatamente assim, "
+        "em maiúsculas, e se a linha está no topo, fora de qualquer [seção]."
+    )
 
 
 def logout() -> None:
@@ -576,11 +586,12 @@ def require_login() -> None:
     with login_col:
         st.title("🔒 Lead Time da Operação")
         st.caption("Acesso restrito. Informe a senha para visualizar o painel.")
-        expected_password = dashboard_password()
+        expected_password, missing_reason = dashboard_password()
         if not expected_password:
-            st.error(
-                f"A senha de acesso ainda não foi configurada. "
-                f"Cadastre `{SECRET_SENHA}` nos Secrets do Streamlit para liberar o painel."
+            st.error(f"O painel está bloqueado porque a senha de acesso não pôde ser lida. {missing_reason}")
+            st.caption(
+                f"Para cadastrar no Streamlit Cloud: ⋮ → Settings → Secrets, cole "
+                f"`{SECRET_SENHA} = \"sua senha\"` e salve."
             )
             st.stop()
         with st.form("login_form", clear_on_submit=True):
