@@ -1,7 +1,9 @@
 from datetime import date, datetime, timedelta, timezone
+import hmac
 from io import BytesIO
 import json
 from pathlib import Path
+import time
 import unicodedata
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -21,6 +23,10 @@ META_FATURAMENTO_DIAS = 2
 META_NIVEL_SERVICO = 0.96
 GITHUB_REPOSITORY = "joaopapapa2025-ux/dashboard-leadtime"
 GITHUB_BRANCH = "main"
+# Nome da chave cadastrada nos Secrets do Streamlit. A senha em si nunca fica no código,
+# porque este arquivo é publicado no GitHub e qualquer pessoa conseguiria lê-la.
+SECRET_SENHA = "SENHA_DASHBOARD"
+ESPERA_SENHA_INCORRETA_SEGUNDOS = 2
 VENDEDORES_ESPECIAIS = {
     "PEDRO HENRIQUE KRUGER BORN",
     "RODRIGO DOS REIS E SARLO",
@@ -548,12 +554,65 @@ def delivery_age_bucket(days: float) -> str:
     return "Atrasado há mais de 10 dias"
 
 
+def dashboard_password() -> str:
+    """Lê a senha cadastrada nos Secrets do Streamlit; retorna vazio se ela não existir."""
+    try:
+        return str(st.secrets[SECRET_SENHA])
+    except Exception:
+        return ""
+
+
+def logout() -> None:
+    # Limpa a sessão inteira para que a próxima pessoa não herde filtros e buscas anteriores.
+    st.session_state.clear()
+
+
+def require_login() -> None:
+    """Bloqueia o painel até que a senha correta seja informada nesta sessão do navegador."""
+    if st.session_state.get("autenticado"):
+        return
+
+    _, login_col, _ = st.columns([1, 2, 1])
+    with login_col:
+        st.title("🔒 Lead Time da Operação")
+        st.caption("Acesso restrito. Informe a senha para visualizar o painel.")
+        expected_password = dashboard_password()
+        if not expected_password:
+            st.error(
+                f"A senha de acesso ainda não foi configurada. "
+                f"Cadastre `{SECRET_SENHA}` nos Secrets do Streamlit para liberar o painel."
+            )
+            st.stop()
+        with st.form("login_form", clear_on_submit=True):
+            typed_password = st.text_input("Senha", type="password", placeholder="Digite a senha de acesso")
+            submitted = st.form_submit_button("Entrar", type="primary")
+        if submitted:
+            # compare_digest leva o mesmo tempo para qualquer senha errada, então o tempo
+            # de resposta não revela quantos caracteres iniciais estavam corretos.
+            if hmac.compare_digest(typed_password.encode("utf-8"), expected_password.encode("utf-8")):
+                st.session_state["autenticado"] = True
+                st.rerun()
+            else:
+                # A espera após cada erro deixa tentativas automáticas de adivinhar a senha muito mais lentas.
+                time.sleep(ESPERA_SENHA_INCORRETA_SEGUNDOS)
+                st.error("Senha incorreta. Tente novamente.")
+    st.stop()
+
+
+# Nada abaixo desta linha (leitura das bases, consulta ao GitHub, tabelas e exportações)
+# é executado antes de a senha correta ser informada.
+require_login()
+
 pedidos_file = find_source_file("SVE611", required=True)
 faturamento_file = find_source_file("SVE660", required=True)
 clientes_file = find_source_file("SUG060", extensions=(".xlsx", ".csv")) or find_source_file("Base Dashboard Inside Sales")
 state_lead_file = find_source_file("Tabela lead time operacao e comercial")
 
-st.title("Lead Time da Operação")
+title_col, logout_col = st.columns([8, 1], vertical_alignment="center")
+with title_col:
+    st.title("Lead Time da Operação")
+with logout_col:
+    st.button("Sair", on_click=logout, help="Encerrar o acesso neste navegador")
 if faturamento_file:
     last_update = format_last_update(github_file_last_update(faturamento_file.name))
     if last_update:
