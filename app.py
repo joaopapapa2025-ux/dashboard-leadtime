@@ -23,8 +23,7 @@ META_FATURAMENTO_DIAS = 2
 META_NIVEL_SERVICO = 0.96
 GITHUB_REPOSITORY = "joaopapapa2025-ux/dashboard-leadtime"
 GITHUB_BRANCH = "main"
-# Nome da chave cadastrada nos Secrets do Streamlit. A senha em si nunca fica no código,
-# porque este arquivo é publicado no GitHub e qualquer pessoa conseguiria lê-la.
+# A senha fica nos Secrets do Streamlit, nunca neste arquivo publicado no GitHub.
 SECRET_SENHA = "SENHA_DASHBOARD"
 ESPERA_SENHA_INCORRETA_SEGUNDOS = 2
 VENDEDORES_ESPECIAIS = {
@@ -91,6 +90,17 @@ def parse_date(series: pd.Series) -> pd.Series:
 
 def parse_brl_number(series: pd.Series) -> pd.Series:
     value = clean_text(series).str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+    return pd.to_numeric(value, errors="coerce")
+
+
+def parse_quantity(series: pd.Series) -> pd.Series:
+    """Lê quantidades sem transformar um possível decimal em milhar."""
+    value = clean_text(series)
+    has_comma = value.str.contains(",", regex=False)
+    value = value.where(
+        ~has_comma,
+        value.str.replace(".", "", regex=False).str.replace(",", ".", regex=False),
+    )
     return pd.to_numeric(value, errors="coerce")
 
 
@@ -230,6 +240,9 @@ def load_data(
             "Cliente NF": clean_text(faturamento_raw.iloc[:, 5]),
             "Data prevista": parse_date(faturamento_raw.iloc[:, 11]),
             "Data entrega": parse_date(faturamento_raw.iloc[:, 12]),
+            # Coluna U da SVE660: quantidade de volumes expedidos (caixas, quando
+            # essa for a unidade operacional utilizada pela expedição).
+            "Quantidade de volumes": parse_quantity(faturamento_raw.iloc[:, 20]),
             "Valor nota fiscal": parse_brl_number(faturamento_raw.iloc[:, 21]),
             "Pedido": clean_text(faturamento_raw.iloc[:, 23]),
             "Data solicitada cliente": parse_date(faturamento_raw.iloc[:, 26]),  # AA
@@ -272,6 +285,7 @@ def load_data(
                 "Data prevista": ("Data prevista", "max"),
                 "Data entrega": ("Data entrega", "max"),
                 "Data solicitada cliente": ("Data solicitada cliente", "max"),
+                "Quantidade de volumes": ("Quantidade de volumes", "sum"),
                 "Valor nota fiscal": ("Valor nota fiscal", "sum"),
                 "Código cliente NF": ("Código cliente NF", "first"),
                 "Cliente NF": ("Cliente NF", "first"),
@@ -348,6 +362,7 @@ def load_data(
     df["Bairro"] = df["Bairro"].replace("", pd.NA).fillna("Não informado")
     df["NFs"] = df["NFs"].fillna(0).astype(int)
     df["Nota fiscal"] = df["Nota fiscal"].fillna("")
+    df["Quantidade de volumes"] = df["Quantidade de volumes"].fillna(0.0)
     df["Valor nota fiscal"] = df["Valor nota fiscal"].fillna(0.0)
 
     state_lead, city_lead = load_lead_time_references(state_lead_path)
@@ -496,7 +511,7 @@ def show_detail(
     st.markdown(f"#### {title}")
     detail_cols = [
         "Pedido", "Nota fiscal", "Cliente", "Código cliente", "Origem", "Vendedor", "Regional", "Grupo", "Estado", "Cidade", "Bairro",
-        "Valor pedido", "Valor nota fiscal", "Data pedido", "Data faturamento", "Data solicitada cliente",
+        "Valor pedido", "Quantidade de volumes", "Valor nota fiscal", "Data pedido", "Data faturamento", "Data solicitada cliente",
         "Previsão por cidade", "Previsão por estado", "Data prevista", "Prazo SLA", "Data entrega",
         "Pedido → faturamento (dias)", "Atraso entrega (dias)", "Situação SLA", "Status logística",
     ]
@@ -512,6 +527,7 @@ def show_detail(
         use_container_width=True,
         column_config={
             "Valor pedido": st.column_config.NumberColumn(format="R$ %.2f"),
+            "Quantidade de volumes": st.column_config.NumberColumn(format="%.0f"),
             "Valor nota fiscal": st.column_config.NumberColumn(format="R$ %.2f"),
             "Data pedido": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "Data faturamento": st.column_config.DateColumn(format="DD/MM/YYYY"),
@@ -555,64 +571,55 @@ def delivery_age_bucket(days: float) -> str:
 
 
 def dashboard_password() -> tuple[str, str]:
-    """Lê a senha dos Secrets do Streamlit. Sem senha, devolve também o motivo para exibir na tela."""
+    """Lê a senha dos Secrets do Streamlit sem expor o valor no código."""
     try:
         password = st.secrets.get(SECRET_SENHA)
     except Exception as error:
-        # O Streamlit usa o mesmo erro para "nenhum Secret" e "Secret mal formatado";
-        # só o segundo traz o erro de leitura do arquivo como causa.
         if error.__cause__ is not None:
-            return "", "Os Secrets têm um erro de formatação. Confira se a senha está entre aspas retas (\")."
+            return "", "Os Secrets têm um erro de formatação. Confira as aspas da senha."
         return "", "Nenhum Secret foi cadastrado para este app."
     if isinstance(password, (str, int, float)) and str(password):
         return str(password), ""
-    return "", (
-        f"Os Secrets deste app não têm a chave `{SECRET_SENHA}`. Confira se o nome está exatamente assim, "
-        "em maiúsculas, e se a linha está no topo, fora de qualquer [seção]."
-    )
+    return "", f"Os Secrets deste app não têm a chave `{SECRET_SENHA}`."
 
 
 def logout() -> None:
-    # Limpa a sessão inteira para que a próxima pessoa não herde filtros e buscas anteriores.
     st.session_state.clear()
 
 
 def require_login() -> None:
-    """Bloqueia o painel até que a senha correta seja informada nesta sessão do navegador."""
+    """Bloqueia as leituras de bases até a senha correta ser informada."""
     if st.session_state.get("autenticado"):
         return
 
     _, login_col, _ = st.columns([1, 2, 1])
     with login_col:
-        st.title("🔒 Lead Time da Operação")
+        st.title("Lead Time da Operação")
         st.caption("Acesso restrito. Informe a senha para visualizar o painel.")
         expected_password, missing_reason = dashboard_password()
         if not expected_password:
-            st.error(f"O painel está bloqueado porque a senha de acesso não pôde ser lida. {missing_reason}")
+            st.error(f"O painel está bloqueado porque a senha não pôde ser lida. {missing_reason}")
             st.caption(
-                f"Para cadastrar no Streamlit Cloud: ⋮ → Settings → Secrets, cole "
-                f"`{SECRET_SENHA} = \"sua senha\"` e salve."
+                f"No Streamlit Cloud, abra Settings → Secrets e cadastre: "
+                f'`{SECRET_SENHA} = "sua senha"`.'
             )
             st.stop()
         with st.form("login_form", clear_on_submit=True):
             typed_password = st.text_input("Senha", type="password", placeholder="Digite a senha de acesso")
             submitted = st.form_submit_button("Entrar", type="primary")
         if submitted:
-            # compare_digest leva o mesmo tempo para qualquer senha errada, então o tempo
-            # de resposta não revela quantos caracteres iniciais estavam corretos.
             if hmac.compare_digest(typed_password.encode("utf-8"), expected_password.encode("utf-8")):
                 st.session_state["autenticado"] = True
                 st.rerun()
             else:
-                # A espera após cada erro deixa tentativas automáticas de adivinhar a senha muito mais lentas.
                 time.sleep(ESPERA_SENHA_INCORRETA_SEGUNDOS)
                 st.error("Senha incorreta. Tente novamente.")
     st.stop()
 
 
-# Nada abaixo desta linha (leitura das bases, consulta ao GitHub, tabelas e exportações)
-# é executado antes de a senha correta ser informada.
+# Nenhuma base ou dado do painel é processado antes da autenticação.
 require_login()
+
 
 pedidos_file = find_source_file("SVE611", required=True)
 faturamento_file = find_source_file("SVE660", required=True)
