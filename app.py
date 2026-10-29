@@ -40,6 +40,36 @@ ORIGENS_SVE660 = {
     "205": "205 - Venda E-comm",
     "122": "122 - Bonificação",
 }
+# As bases do ERP são lidas pelo nome do cabeçalho, e não pela posição da coluna:
+# o relatório já ganhou colunas novas no meio (ex.: "Ult.Motivo" na coluna J da SVE611),
+# o que deslocava todas as seguintes. Formato: nome usado no painel -> cabeçalho na planilha.
+COLUNAS_SVE611 = {
+    "Pedido": "Pedido",
+    "Situação pedido": "Sit",
+    "Código cliente": "Cliente",
+    "Cliente": "Descrição Cliente",
+    "Vendedor": "Descrição Vendedor",
+    "Vendedor interno": "Descrição Vendedor Interno",
+    "Data pedido": "Data",
+    "Valor pedido": "Valor Total",
+}
+COLUNAS_SVE660 = {
+    "Data faturamento": "Data Emissão",
+    "Nota fiscal": "Número",
+    "Código origem": "Origem",
+    "Código cliente NF": "Cliente",
+    "Cliente NF": "Descrição Cliente",
+    "Data prevista": "Data Prevista",
+    "Data entrega": "Data Entrega",
+    # Quantidade de volumes expedidos (caixas, quando essa for a unidade
+    # operacional utilizada pela expedição).
+    "Quantidade de volumes": "Volume",
+    "Valor nota fiscal": "Valor NF",
+    "Pedido": "Nro. Pedido",
+    "Data solicitada cliente": "Data Prev. do Pedido",
+    "Regional": "Desc.Região",
+    "Grupo": "Desc.Grupo Cliente",
+}
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -163,6 +193,22 @@ def read_client_location_file(path: str) -> pd.DataFrame:
     return pd.read_excel(path, dtype=str)
 
 
+class SourceLayoutError(Exception):
+    """A planilha exportada do ERP não tem alguma das colunas que o painel usa."""
+
+
+def select_source_columns(raw: pd.DataFrame, columns: dict[str, str], path: str) -> pd.DataFrame:
+    """Localiza as colunas pelo cabeçalho e já as renomeia para os nomes usados no painel."""
+    raw = raw.rename(columns=lambda header: str(header).strip())
+    missing = [header for header in columns.values() if header not in raw.columns]
+    if missing:
+        raise SourceLayoutError(
+            f"A planilha `{Path(path).name}` não tem a(s) coluna(s): {', '.join(missing)}. "
+            "Confira se ela foi exportada do ERP no formato de sempre (o nome do cabeçalho precisa ser o mesmo)."
+        )
+    return raw[list(columns.values())].set_axis(list(columns.keys()), axis=1)
+
+
 @st.cache_data(show_spinner="Calculando as referências de prazo por cidade e estado...")
 def load_lead_time_references(path: str | None) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not path:
@@ -211,45 +257,23 @@ def load_data(
     # As assinaturas integram a chave do st.cache_data. Elas existem apenas para
     # garantir que um arquivo atualizado no GitHub nunca reutilize dados antigos.
     _ = (pedidos_signature, faturamento_signature, clientes_signature, state_lead_signature)
-    pedidos_raw = pd.read_excel(pedidos_path, dtype=str)
-    faturamento_raw = pd.read_excel(faturamento_path, dtype=str)
+    pedidos_raw = select_source_columns(pd.read_excel(pedidos_path, dtype=str), COLUNAS_SVE611, pedidos_path)
+    faturamento_raw = select_source_columns(pd.read_excel(faturamento_path, dtype=str), COLUNAS_SVE660, faturamento_path)
 
-    pedidos = pd.DataFrame(
-        {
-            "Pedido": clean_text(pedidos_raw.iloc[:, 2]),
-            "Situação pedido": clean_text(pedidos_raw.iloc[:, 4]),
-            "Código cliente": clean_text(pedidos_raw.iloc[:, 5]),
-            "Cliente": clean_text(pedidos_raw.iloc[:, 6]),
-            "Vendedor": clean_text(pedidos_raw.iloc[:, 8]),
-            "Vendedor interno": clean_text(pedidos_raw.iloc[:, 21]),  # Coluna V
-            "Data pedido": parse_date(pedidos_raw.iloc[:, 9]),
-            "Valor pedido": parse_brl_number(pedidos_raw.iloc[:, 13]),
-        }
-    )
+    pedidos = pedidos_raw.apply(clean_text)
+    pedidos["Data pedido"] = parse_date(pedidos_raw["Data pedido"])
+    pedidos["Valor pedido"] = parse_brl_number(pedidos_raw["Valor pedido"])
     pedidos = pedidos[
         pedidos["Pedido"].str.endswith("00", na=False)
         & ~pedidos["Situação pedido"].isin(["CAN", "REP"])
     ].copy()
 
-    faturamento_base = pd.DataFrame(
-        {
-            "Data faturamento": parse_date(faturamento_raw.iloc[:, 0]),
-            "Nota fiscal": clean_text(faturamento_raw.iloc[:, 1]),
-            "Código origem": clean_text(faturamento_raw.iloc[:, 3]).str.replace(r"\.0+$", "", regex=True),
-            "Código cliente NF": clean_text(faturamento_raw.iloc[:, 4]),
-            "Cliente NF": clean_text(faturamento_raw.iloc[:, 5]),
-            "Data prevista": parse_date(faturamento_raw.iloc[:, 11]),
-            "Data entrega": parse_date(faturamento_raw.iloc[:, 12]),
-            # Coluna U da SVE660: quantidade de volumes expedidos (caixas, quando
-            # essa for a unidade operacional utilizada pela expedição).
-            "Quantidade de volumes": parse_quantity(faturamento_raw.iloc[:, 20]),
-            "Valor nota fiscal": parse_brl_number(faturamento_raw.iloc[:, 21]),
-            "Pedido": clean_text(faturamento_raw.iloc[:, 23]),
-            "Data solicitada cliente": parse_date(faturamento_raw.iloc[:, 26]),  # AA
-            "Regional": clean_text(faturamento_raw.iloc[:, 31]),
-            "Grupo": clean_text(faturamento_raw.iloc[:, 33]),
-        }
-    )
+    faturamento_base = faturamento_raw.apply(clean_text)
+    faturamento_base["Código origem"] = faturamento_base["Código origem"].str.replace(r"\.0+$", "", regex=True)
+    for date_column in ["Data faturamento", "Data prevista", "Data entrega", "Data solicitada cliente"]:
+        faturamento_base[date_column] = parse_date(faturamento_raw[date_column])
+    faturamento_base["Quantidade de volumes"] = parse_quantity(faturamento_raw["Quantidade de volumes"])
+    faturamento_base["Valor nota fiscal"] = parse_brl_number(faturamento_raw["Valor nota fiscal"])
     faturamento_base["Origem"] = faturamento_base["Código origem"].map(ORIGENS_SVE660)
     pedidos_origem_fora_escopo = set(
         faturamento_base.loc[
@@ -653,12 +677,22 @@ try:
         file_signature(clientes_file),
         file_signature(state_lead_file),
     )
+except SourceLayoutError as error:
+    st.error(str(error))
+    st.stop()
 except Exception as error:
     st.exception(error)
     st.stop()
 
 if not state_lead_file:
     st.warning("A base 'Tabela lead time operacao e comercial.xlsx' não foi encontrada. As previsões por cidade e estado não serão calculadas.")
+
+if base["Data pedido"].isna().all():
+    st.error(
+        f"Nenhum pedido da `{pedidos_file.name}` tem data válida na coluna "
+        f"`{COLUNAS_SVE611['Data pedido']}`. Confira se a planilha foi exportada do ERP no formato de sempre."
+    )
+    st.stop()
 
 st.subheader("Filtros")
 min_date = base["Data pedido"].min().date()
