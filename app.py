@@ -61,6 +61,11 @@ COLUNAS_SVE660 = {
     "Cliente NF": "Descrição Cliente",
     "Data prevista": "Data Prevista",
     "Data entrega": "Data Entrega",
+    # Agenda de entrega: o dia confirmado com o cliente e a última ocorrência da nota,
+    # que indica quando a agenda foi solicitada.
+    "Agenda marcada para": "Data do Agendamento",
+    "Data ocorrência": "Data Ocorrência",
+    "Ocorrência": "Descrição Ocorrência",
     # Quantidade de volumes expedidos (caixas, quando essa for a unidade
     # operacional utilizada pela expedição).
     "Quantidade de volumes": "Volume",
@@ -270,8 +275,15 @@ def load_data(
 
     faturamento_base = faturamento_raw.apply(clean_text)
     faturamento_base["Código origem"] = faturamento_base["Código origem"].str.replace(r"\.0+$", "", regex=True)
-    for date_column in ["Data faturamento", "Data prevista", "Data entrega", "Data solicitada cliente"]:
+    for date_column in [
+        "Data faturamento", "Data prevista", "Data entrega", "Data solicitada cliente", "Agenda marcada para", "Data ocorrência",
+    ]:
         faturamento_base[date_column] = parse_date(faturamento_raw[date_column])
+    # O ERP não tem uma coluna com o dia em que a agenda foi pedida: ele só aparece como a data
+    # da última ocorrência enquanto ela trata de agendamento ("Agendamento solicitado", "Agenda
+    # aguardando confirmação"...). Depois da entrega a ocorrência muda e essa data deixa de vir.
+    is_agenda_occurrence = faturamento_base["Ocorrência"].str.upper().str.contains("AGEND", na=False)
+    faturamento_base["Agenda solicitada em"] = faturamento_base["Data ocorrência"].where(is_agenda_occurrence)
     faturamento_base["Quantidade de volumes"] = parse_quantity(faturamento_raw["Quantidade de volumes"])
     faturamento_base["Valor nota fiscal"] = parse_brl_number(faturamento_raw["Valor nota fiscal"])
     faturamento_base["Origem"] = faturamento_base["Código origem"].map(ORIGENS_SVE660)
@@ -309,6 +321,8 @@ def load_data(
                 "Data prevista": ("Data prevista", "max"),
                 "Data entrega": ("Data entrega", "max"),
                 "Data solicitada cliente": ("Data solicitada cliente", "max"),
+                "Agenda solicitada em": ("Agenda solicitada em", "max"),
+                "Agenda marcada para": ("Agenda marcada para", "max"),
                 "Quantidade de volumes": ("Quantidade de volumes", "sum"),
                 "Valor nota fiscal": ("Valor nota fiscal", "sum"),
                 "Código cliente NF": ("Código cliente NF", "first"),
@@ -536,7 +550,8 @@ def show_detail(
     detail_cols = [
         "Pedido", "Nota fiscal", "Cliente", "Código cliente", "Origem", "Vendedor", "Regional", "Grupo", "Estado", "Cidade", "Bairro",
         "Valor pedido", "Quantidade de volumes", "Valor nota fiscal", "Data pedido", "Data faturamento", "Data solicitada cliente",
-        "Previsão por cidade", "Previsão por estado", "Data prevista", "Prazo SLA", "Data entrega",
+        "Previsão por cidade", "Previsão por estado", "Data prevista", "Agenda solicitada em", "Agenda marcada para",
+        "Prazo SLA", "Data entrega",
         "Pedido → faturamento (dias)", "Atraso entrega (dias)", "Situação SLA", "Status logística",
     ]
     # Atraso atual é uma leitura de hoje e, portanto, só faz sentido para pedidos em aberto.
@@ -559,6 +574,14 @@ def show_detail(
             "Previsão por cidade": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "Previsão por estado": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "Data prevista": st.column_config.DateColumn(format="DD/MM/YYYY"),
+            "Agenda solicitada em": st.column_config.DateColumn(
+                format="DD/MM/YYYY",
+                help="Data da última ocorrência de agendamento na SVE660. Só aparece enquanto a agenda está em andamento.",
+            ),
+            "Agenda marcada para": st.column_config.DateColumn(
+                format="DD/MM/YYYY",
+                help="Dia confirmado com o cliente para a entrega (coluna Data do Agendamento da SVE660).",
+            ),
             "Prazo SLA": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "Data entrega": st.column_config.DateColumn(format="DD/MM/YYYY"),
         },
